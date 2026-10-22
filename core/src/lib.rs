@@ -420,6 +420,7 @@ pub struct Application<'a> {
     screen_share_resolution: ScreenShareResolution,
     screen_share_picker_mode: ScreenSharePickerMode,
     remote_control_enabled: bool,
+    share_overlay_enabled: bool,
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
     pending_overlay_repair: Option<MonitorId>,
@@ -510,6 +511,7 @@ impl<'a> Application<'a> {
             screen_share_resolution: ScreenShareResolution::P4K,
             screen_share_picker_mode: ScreenSharePickerMode::Screen,
             remote_control_enabled: true,
+            share_overlay_enabled: true,
             clipboard_controller,
             screen_selection: None,
             pending_overlay_repair: None,
@@ -2191,6 +2193,13 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 log::info!("user_event: SetTelemetryEnabled({enabled})");
                 sentry_utils::set_telemetry_enabled(enabled);
             }
+            UserEvent::SetShareOverlayEnabled(enabled) => {
+                log::info!("user_event: SetShareOverlayEnabled({enabled})");
+                self.share_overlay_enabled = enabled;
+                if let Some(window_manager) = self.window_manager.as_mut() {
+                    window_manager.set_share_overlay_enabled(enabled);
+                }
+            }
             UserEvent::ToggleMic => {
                 log::info!("user_event: ToggleMic");
                 if let Some(room_service) = self.room_service.as_ref() {
@@ -2644,7 +2653,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     context_manager,
                     self.event_loop_proxy.clone(),
                 ) {
-                    Ok(wm) => self.window_manager = Some(wm),
+                    Ok(mut wm) => {
+                        wm.set_share_overlay_enabled(self.share_overlay_enabled);
+                        self.window_manager = Some(wm);
+                    }
                     Err(e) => log::error!(
                         "Application::resumed: failed to initialize WindowManager: {:?}",
                         e
@@ -3259,6 +3271,7 @@ pub enum UserEvent {
     SetScreenShareResolution(ScreenShareResolution),
     SetScreenSharePickerMode(ScreenSharePickerMode),
     SetTelemetryEnabled(bool),
+    SetShareOverlayEnabled(bool),
     CreateRoomResult(Result<Vec<socket_lib::CoreParticipantState>, String>),
     ExitRequested,
 }
@@ -3413,6 +3426,9 @@ impl RenderEventLoop {
                     }
                     Message::SetTelemetryEnabled(enabled) => {
                         UserEvent::SetTelemetryEnabled(enabled)
+                    }
+                    Message::SetShareOverlayEnabled(enabled) => {
+                        UserEvent::SetShareOverlayEnabled(enabled)
                     }
                     Message::SetAppVeilBundleIds(bundle_ids) => {
                         UserEvent::SetAppVeilBundleIds(bundle_ids)

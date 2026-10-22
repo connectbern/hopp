@@ -55,6 +55,10 @@ pub struct UserSettings {
     pub default_mic: Option<String>,
     #[serde(default = "default_true")]
     pub remote_control_enabled: bool,
+    /// Show the sharing overlay (purple frame, teammate cursors and drawings) on the
+    /// sharer's own screen. Off = nothing is drawn on screen while sharing.
+    #[serde(default = "default_true")]
+    pub share_overlay_enabled: bool,
     #[serde(default = "default_noise_cancellation_enabled")]
     pub noise_cancellation_enabled: bool,
     #[serde(default = "default_screen_share_resolution")]
@@ -83,6 +87,7 @@ impl Default for UserSettings {
             start_mic_on_call: true,
             default_mic: None,
             remote_control_enabled: true,
+            share_overlay_enabled: true,
             noise_cancellation_enabled: true,
             screen_share_resolution: ScreenShareResolution::P4K,
             screen_share_picker_mode: ScreenSharePickerMode::Screen,

@@ -262,6 +262,9 @@ pub enum Message {
     SetScreenSharePickerMode(ScreenSharePickerMode),
     SetAppVeilBundleIds(Vec<String>),
     SetTelemetryEnabled(bool),
+    /// Whether the sharer's overlay (purple frame, teammate cursors and drawings) is
+    /// shown on the sharer's own screen while sharing.
+    SetShareOverlayEnabled(bool),
     /// Microphone RMS level in [0.0, 1.0], emitted ~1 Hz from core capturer.
     MicrophoneAudioLevel(f32),
 }

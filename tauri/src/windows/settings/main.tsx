@@ -628,6 +628,14 @@ function SettingsWindow() {
                       typedInvoke("set_remote_control_enabled", { enabled: v }).then(() => refetchSettings());
                     }}
                   />
+                  <CheckboxRow
+                    title="Show overlay on my screen while sharing"
+                    description="Draws the purple frame around the shared area and your teammates' cursors and drawings on your own screen. Off: nothing is drawn on your screen while sharing (remote control still works)"
+                    checked={settings.share_overlay_enabled}
+                    onCheckedChange={(v) => {
+                      typedInvoke("set_share_overlay_enabled", { enabled: v }).then(() => refetchSettings());
+                    }}
+                  />
                   <ResolutionRow
                     value={settings.screen_share_resolution}
                     onValueChange={(resolution) => {

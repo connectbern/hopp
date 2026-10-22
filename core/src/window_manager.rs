@@ -163,6 +163,10 @@ pub struct WindowManager<'a> {
     windows: Vec<WindowEntry<'a>>,
     active_monitor_id: Option<MonitorId>,
     event_loop_proxy: EventLoopProxy<UserEvent>,
+    /// When false the active overlay window stays hidden while sharing, so nothing
+    /// (no frame, no teammate cursors or drawings) is drawn on the sharer's screen.
+    /// The screen-selection overlays are not affected.
+    share_overlay_enabled: bool,
 }
 
 impl<'a> WindowManager<'a> {
@@ -188,6 +192,7 @@ impl<'a> WindowManager<'a> {
             windows,
             active_monitor_id: None,
             event_loop_proxy,
+            share_overlay_enabled: true,
         })
     }
 
@@ -265,6 +270,7 @@ impl<'a> WindowManager<'a> {
             "WindowManager::show_window: looking for window with id {:?}",
             target_id
         );
+        let share_overlay_enabled = self.share_overlay_enabled;
 
         // Check existence before the retry loop (avoids borrow issues with iter_mut + retain).
         if !self.windows.iter().any(|e| e.monitor_id == target_id) {
@@ -327,7 +333,9 @@ impl<'a> WindowManager<'a> {
             }));
             let _ = entry.gfx.window().set_cursor_hittest(true);
         }
-        entry.window.set_visible(true);
+        // The sharing overlay stays hidden when the user turned it off; the
+        // screen-selection overlays (set_active_window == false) are always shown.
+        entry.window.set_visible(!set_active_window || share_overlay_enabled);
 
         Ok(entry.window.clone())
     }
@@ -362,6 +370,27 @@ impl<'a> WindowManager<'a> {
             .iter_mut()
             .map(|entry| &mut entry.gfx)
             .collect()
+    }
+
+    /// Shows or hides the sharing overlay on the sharer's screen. Takes effect
+    /// immediately for an active share; the screen picker is left alone.
+    pub fn set_share_overlay_enabled(&mut self, enabled: bool) {
+        self.share_overlay_enabled = enabled;
+        let Some(active_id) = self.active_monitor_id.as_ref() else {
+            return;
+        };
+        if let Some(entry) = self
+            .windows
+            .iter_mut()
+            .find(|entry| &entry.monitor_id == active_id)
+            .filter(|entry| !entry.gfx.has_screen_selection())
+        {
+            log::info!("WindowManager::set_share_overlay_enabled({enabled})");
+            entry.window.set_visible(enabled);
+            if enabled {
+                entry.gfx.trigger_render();
+            }
+        }
     }
 
     pub fn active_window_monitor_mismatch(
@@ -642,12 +671,13 @@ impl<'a> WindowManager<'a> {
 
     pub fn hide_screen_selection(&mut self) {
         let active_monitor_id = self.active_monitor_id.clone();
+        let share_overlay_enabled = self.share_overlay_enabled;
         for entry in &mut self.windows {
             entry.gfx.set_screen_selection(None);
             let _ = entry.window.set_cursor_hittest(false);
 
             if active_monitor_id.as_ref() == Some(&entry.monitor_id) {
-                entry.window.set_visible(true);
+                entry.window.set_visible(share_overlay_enabled);
                 entry.gfx.trigger_render();
                 continue;
             }

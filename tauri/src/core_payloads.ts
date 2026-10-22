@@ -105,6 +105,7 @@ export interface UserSettings {
   start_mic_on_call: boolean;
   default_mic: string | null;
   remote_control_enabled: boolean;
+  share_overlay_enabled: boolean;
   noise_cancellation_enabled: boolean;
   screen_share_resolution: ScreenShareResolution;
   screen_share_picker_mode: ScreenSharePickerMode;
@@ -228,6 +229,7 @@ export interface CommandMap {
   unmute_mic: { args: void; return: void };
   toggle_mic: { args: void; return: void };
   set_noise_cancellation: { args: { enabled: boolean }; return: void };
+  set_share_overlay_enabled: { args: { enabled: boolean }; return: void };
   set_screen_share_resolution: { args: { resolution: ScreenShareResolution }; return: void };
   set_screen_share_picker_mode: { args: { mode: ScreenSharePickerMode }; return: void };
   list_microphones: { args: void; return: AudioDevice[] };

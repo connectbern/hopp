@@ -883,6 +883,18 @@ fn set_noise_cancellation(app: tauri::AppHandle, enabled: bool) {
 }
 
 #[tauri::command(async)]
+fn set_share_overlay_enabled(app: tauri::AppHandle, enabled: bool) {
+    log::info!("set_share_overlay_enabled: {enabled}");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    data.app_state
+        .update_user_setting(|settings| settings.share_overlay_enabled = enabled);
+    if let Err(e) = data.sender.send(Message::SetShareOverlayEnabled(enabled)) {
+        log::error!("set_share_overlay_enabled: failed to send: {e:?}");
+    }
+}
+
+#[tauri::command(async)]
 fn set_screen_share_resolution(app: tauri::AppHandle, resolution: ScreenShareResolution) {
     log::info!("set_screen_share_resolution: {resolution:?}");
     let data = app.state::<Mutex<AppData>>();
@@ -1394,6 +1406,10 @@ fn main() {
             if let Err(e) = sender.send(Message::SetNoiseCancellation(noise_cancellation_enabled)) {
                 log::error!("Failed to send initial noise_cancellation_enabled: {e:?}");
             }
+            let share_overlay_enabled = app_state.user_settings().share_overlay_enabled;
+            if let Err(e) = sender.send(Message::SetShareOverlayEnabled(share_overlay_enabled)) {
+                log::error!("Failed to send initial share_overlay_enabled: {e:?}");
+            }
             let screen_share_resolution = app_state.user_settings().screen_share_resolution;
             if let Err(e) = sender.send(Message::SetScreenShareResolution(screen_share_resolution)) {
                 log::error!("Failed to send initial screen_share_resolution: {e:?}");
@@ -1739,6 +1755,7 @@ fn main() {
             unmute_mic,
             toggle_mic,
             set_noise_cancellation,
+            set_share_overlay_enabled,
             set_screen_share_resolution,
             set_screen_share_picker_mode,
             list_microphones,

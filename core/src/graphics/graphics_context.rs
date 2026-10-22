@@ -264,6 +264,10 @@ impl<'a> GraphicsContext<'a> {
         self.screen_selection = screen_selection;
     }
 
+    pub(crate) fn has_screen_selection(&self) -> bool {
+        self.screen_selection.is_some()
+    }
+
     pub(crate) fn handle_screen_selection_event(
         &mut self,
         event: &WindowEvent,
