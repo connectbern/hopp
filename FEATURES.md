@@ -1,0 +1,20 @@
+# Fork features (chagai's Hopp)
+
+This is a fork of [gethopp/hopp](https://github.com/gethopp/hopp) (AGPL-3.0). It tracks
+upstream `main`; everything below is kept as small, separable commits on the branch
+`chagai/main`. Rebase or merge upstream regularly and re-check this list afterwards.
+
+| # | Feature / fix | Where | Default | Status |
+|---|---------------|-------|---------|--------|
+| 1 | **Setting: "Show overlay on my screen while sharing"** (Settings → Call settings → Screen share settings). While sharing, Hopp shows an always-on-top transparent overlay window on the sharer's screen that draws a 4 px purple frame around the shared area plus teammates' cursors, drawings and click animations. **Off = that overlay window is never shown while sharing** (it is only used for the screen picker), so no frame, no fill, no title bar can appear; remote control keeps working. Persisted as `share_overlay_enabled` in `app_state.json`, forwarded to `hopp_core` over the socket (`SetShareOverlayEnabled`), applied immediately to an active share. | `tauri/src-tauri/src/{app_state,main}.rs`, `tauri/src/core_payloads.ts`, `tauri/src/windows/settings/main.tsx`, `core/socket_lib/src/lib.rs`, `core/src/lib.rs`, `core/src/window_manager.rs`, `core/src/graphics/graphics_context.rs` | on (= upstream behaviour) | needs a check on Windows after each upstream merge |
+| 2 | **Fix (Windows): no title-bar strip across the top of the screen while sharing.** The undecorated, transparent overlay window (and the drawing window) got a classic caption bar painted into their top rows by `DefWindowProc` on activation changes (upstream issue [#277](https://github.com/gethopp/hopp/issues/277); mechanism described in winit [#4733](https://github.com/rust-windowing/winit/issues/4733) / [#4771](https://github.com/rust-windowing/winit/pull/4771)). A window subclass now answers `WM_NCPAINT` / `WM_NCACTIVATE` so the frame is never painted. Matters for the picker phase and for feature 1 = on. | `core/src/window/frameless.rs`, hooked in `core/src/window_manager.rs` and `core/src/window/drawing_window.rs` | always on (bug fix) | drop once upstream/winit ship an equivalent fix |
+| 3 | **On-demand Windows build** (`Actions → Build Windows installer (fork) → Run workflow`). Builds `hopp_core` + the NSIS installer on `windows-latest` without upstream's signing/telemetry secrets; artifact `hopp-windows-installer`. `tauri.conf.fork.json` turns off updater artifacts (no signing key needed). Optional input `api_base_url` bakes a default backend host. | `.github/workflows/build-windows.yml`, `tauri/src-tauri/tauri.conf.fork.json` | — | — |
+
+## Upgrading to a new upstream release
+
+1. `git fetch upstream && git merge upstream/main` on `chagai/main` (conflicts, if any, are
+   confined to the files listed above).
+2. Run the **Build Windows installer (fork)** workflow on `chagai/main`.
+3. Install the new `hopp_<version>_x64-setup.exe` over the old one (settings are kept).
+4. Verify: share a screen → nothing drawn on the sharer's screen with the switch off; with it
+   on, the purple frame but no white strip at the top.
