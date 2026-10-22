@@ -232,6 +232,7 @@ impl DrawingWindow {
             DrawingWindowError::WindowCreation
         })?;
         let window = Arc::new(window);
+        crate::window::frameless::suppress_nonclient_painting(&window);
 
         window.set_maximized(true);
         window.focus_window();

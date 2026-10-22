@@ -216,6 +216,7 @@ impl<'a> WindowManager<'a> {
         }
 
         let _ = window.set_cursor_hittest(false);
+        crate::window::frameless::suppress_nonclient_painting(&window);
 
         #[cfg(target_os = "windows")]
         {
