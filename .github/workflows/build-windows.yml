@@ -1,0 +1,77 @@
+name: "Build Windows installer (fork)"
+
+# On-demand build of the NSIS installer for this fork. Mirrors the Windows job of
+# upstream's release.yml, minus release creation, code signing and telemetry keys.
+on:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: "Default backend host baked into the app (hostname only, no https://). Leave empty to rely on Settings > Custom Backend URL."
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      # No telemetry endpoints in the fork build.
+      SENTRY_DSN_RUST: ""
+      VITE_SENTRY_DSN_JS: ""
+      VITE_POSTHOG_API_KEY: ""
+      VITE_POSTHOG_HOST: ""
+      VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url }}
+      VITE_BOTTOM_ARROW: "true"
+      VITE_OS: "windows"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "yarn"
+          cache-dependency-path: yarn.lock
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install Yarn
+        run: corepack prepare yarn@stable --activate
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core
+            tauri/src-tauri
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: yarn install
+
+      # core/build.rs writes the binary as target/release/hopp_core-<triple>.exe,
+      # which is where tauri.conf.fork.json's externalBin expects it.
+      - name: Build hopp_core (release)
+        shell: bash
+        working-directory: core
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Build Tauri app (NSIS installer)
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: tauri
+          args: --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.conf.fork.json
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopp-windows-installer
+          path: tauri/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error

@@ -1,0 +1,6 @@
+{
+  "bundle": {
+    "externalBin": ["../../core/target/release/hopp_core"],
+    "createUpdaterArtifacts": false
+  }
+}
