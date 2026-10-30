@@ -2,11 +2,11 @@ use super::{get_modifiers, KeyModifier, KeyboardEventTrait, KeyboardLayoutTrait}
 
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
-        GetKeyboardLayout, GetKeyboardState, MapVirtualKeyExW, SendInput, ToUnicode, HKL, INPUT,
-        INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-        MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
-        VK_ESCAPE, VK_HOME, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RCONTROL, VK_RETURN,
-        VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_SHIFT, VK_TAB, VK_UP,
+        GetKeyboardLayout, MapVirtualKeyExW, SendInput, ToUnicodeEx, HKL, INPUT, INPUT_0,
+        INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+        KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_BACK, VK_CAPITAL, VK_CONTROL,
+        VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT,
+        VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_SHIFT, VK_TAB, VK_UP,
     },
     WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId},
 };
@@ -53,17 +53,18 @@ impl KeyboardLayoutTrait for KeyboardLayout {
         if scan_code == 0 {
             return None;
         }
+        // fork: start from a clean keyboard state instead of GetKeyboardState(), so a
+        // stale Ctrl/Shift/Caps Lock in this thread's state cannot poison the key map.
         let mut keyboard_state = [0u8; 256];
-        unsafe {
-            let res = GetKeyboardState(&mut keyboard_state);
-            if let Err(e) = res {
-                log::error!("key_translate GetKeyboardState failed {e:?}");
-                return None;
-            }
-        }
 
         let modifiers = get_modifiers(modifiers);
         for modifier in modifiers {
+            // On Windows Alt alone does not change the character a key produces;
+            // AltGr (= Ctrl+Alt) does (@ # \ | [ ] { } ~ on Swiss/German layouts),
+            // so the "Option" pass of the key map is built with AltGr.
+            if matches!(modifier, KeyModifier::Option) {
+                keyboard_state[VK_CONTROL.0 as usize] |= 0x80;
+            }
             let virtual_key = map_modifier_to_virtual_key(modifier);
             if virtual_key != 0 {
                 keyboard_state[virtual_key as usize] |= 0x80;
@@ -71,13 +72,17 @@ impl KeyboardLayoutTrait for KeyboardLayout {
         }
 
         let mut res: [u16; 4] = [0; 4];
+        // fork: translate with the foreground window's layout (ToUnicode used this
+        // thread's layout) and flag 0x4 = leave the kernel keyboard state alone, so
+        // scanning dead keys (^ ´ ` ¨ ~) while building the map has no side effects.
         let unicode = unsafe {
-            ToUnicode(
+            ToUnicodeEx(
                 keycode as u32,
                 scan_code,
-                Some(&keyboard_state),
+                &keyboard_state,
                 &mut res,
-                0,
+                0x4,
+                self.layout,
             )
         };
         if unicode <= 0 {
@@ -117,6 +122,9 @@ impl KeyboardLayoutTrait for KeyboardLayout {
         map.insert("Shift", VK_SHIFT.0);
         map.insert("Meta", VK_LWIN.0);
         map.insert("Alt", VK_MENU.0);
+        // fork: a Windows viewer's AltGr arrives as "AltGraph"; press Right Alt so
+        // AltGr characters (@ # \ | [ ] { } ~ on Swiss/German layouts) can be typed.
+        map.insert("AltGraph", VK_RMENU.0);
         map.insert("CapsLock", VK_CAPITAL.0);
         map
     }
@@ -159,11 +167,16 @@ impl KeyboardEvent {
         down: bool,
         _target_process_id: Option<i32>,
     ) -> Option<Self> {
-        let flags = if down {
+        let mut flags = if down {
             KEYBD_EVENT_FLAGS(0)
         } else {
             KEYEVENTF_KEYUP
         };
+        // fork: right-hand Alt/Ctrl are extended keys; right Alt is AltGr on
+        // Swiss/German layouts, where Windows then adds the implicit left Ctrl.
+        if keycode == VK_RMENU.0 || keycode == VK_RCONTROL.0 {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
         Some(Self {
             keycode,
             unicode: 0,

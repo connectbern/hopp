@@ -771,6 +771,13 @@ impl CursorController {
             log::warn!("mouse_click_controller: invalid source position or capture frame");
             return;
         };
+        // fork: prove in hopp.log that remote clicks still arrive while the screen is off.
+        #[cfg(target_os = "windows")]
+        if click_data.down && crate::utils::display_power_windows::screen_is_off() {
+            log::info!(
+                "mouse_click_controller: remote click from {identity} while the screen is OFF"
+            );
+        }
         let mut control_changed = false;
         let mut controllers_cursors = self.controllers_cursors.lock().unwrap();
         for controller in controllers_cursors.iter_mut() {

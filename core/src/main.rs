@@ -32,6 +32,9 @@ fn main() -> Result<(), impl std::error::Error> {
         });
     }
 
+    #[cfg(target_os = "windows")]
+    hopp_core::utils::display_power_windows::start_logging();
+
     let socket_path = match args.socket_path {
         Some(path) => path,
         None => std::env::temp_dir()

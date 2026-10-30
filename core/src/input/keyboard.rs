@@ -103,6 +103,16 @@ pub fn get_modifiers(modifier: u32) -> Vec<KeyModifier> {
     result
 }
 
+/// Upper bound (exclusive) of the keycodes scanned when building the key map.
+/// macOS keycodes are below 128. Windows virtual-key codes for punctuation
+/// (VK_OEM_1..VK_OEM_8, VK_OEM_102, VK_OEM_PLUS/COMMA/MINUS/PERIOD: , ; : . - ' ` etc.)
+/// are 0xBA..0xE2, so on Windows the whole 0..256 range is scanned (fork fix: these
+/// keys were missing, logging "failed to get keycode for key: ,").
+#[cfg(target_os = "windows")]
+const MAX_KEYCODE: u16 = 256;
+#[cfg(not(target_os = "windows"))]
+const MAX_KEYCODE: u16 = 128;
+
 /// A key mapping entry that associates a keycode with a key string and modifier combination.
 pub struct KeyMapEntry {
     /// The platform-specific keycode that produces this key combination.
@@ -247,7 +257,7 @@ impl KeyMap {
         ];
         let mut entries = Vec::new();
         for modifier in modifiers {
-            for i in 0..128 {
+            for i in 0..MAX_KEYCODE {
                 let result = layout.key_translate(i, modifier);
                 if let Some(s) = result {
                     log::debug!(
@@ -313,6 +323,22 @@ impl KeyMap {
         for entry in self.entries.iter() {
             if entry.key == key && entry.modifiers == modifier {
                 return Some(entry.keycode);
+            }
+        }
+
+        /*
+         * fork (Windows): the Option pass of the map is built with AltGr. For
+         * Alt+letter shortcuts (Alt+F, Alt+Tab-like combos) the key is not an
+         * AltGr character, so fall back to the same key without the modifier;
+         * the Alt key itself is pressed by its own key event.
+         */
+        #[cfg(target_os = "windows")]
+        if modifier & KeyModifier::Option as u32 != 0 {
+            let modifier = modifier & !(KeyModifier::Option as u32);
+            for entry in self.entries.iter() {
+                if entry.key == key && entry.modifiers == modifier {
+                    return Some(entry.keycode);
+                }
             }
         }
 
@@ -517,7 +543,13 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
             && !keystroke_data.meta
             && !keystroke_data.alt
             && !keystroke_data.ctrl
-            && keystroke_data.down
+            // fork: on Windows the release is sent as a Unicode key-up too, so every
+            // Unicode key-down gets its matching key-up (before, the release went out
+            // as a plain key-up of a key that was never pressed, or of key code 0).
+            // Only for single characters, so named keys ("Alt", "Meta", ...) keep their
+            // normal virtual-key release.
+            && (keystroke_data.down
+                || (cfg!(target_os = "windows") && keystroke_data.key.chars().count() == 1))
         {
             event.override_utf(&keystroke_data.key);
         }

@@ -50,6 +50,8 @@ pub mod utils {
     pub mod clock;
     pub mod geometry;
     pub mod svg_renderer;
+    #[cfg(target_os = "windows")]
+    pub mod display_power_windows;
 }
 
 pub(crate) mod window {
