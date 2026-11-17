@@ -15,6 +15,7 @@ use tauri::{
     Emitter,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_notification::NotificationExt;
 
 use tauri_plugin_log::{Target, TargetKind};
 
@@ -73,6 +74,146 @@ async fn get_available_content(app: tauri::AppHandle) -> Result<(), String> {
         log::error!("get_available_content: failed to send message: {e:?}");
         "Failed to start screen selection".to_string()
     })
+}
+
+/// Starts sharing the default display (last shared, else primary) without showing
+/// the picker. Only used for a screen share started by a remote command; remote
+/// control follows the same "Enable remote control by default" setting as a share
+/// started from the picker.
+#[tauri::command(async)]
+async fn start_default_screenshare(app: tauri::AppHandle) -> Result<(), String> {
+    log::info!("start_default_screenshare: sharing the default display without the picker");
+
+    let data = app.state::<Mutex<AppData>>();
+    let data = data.lock().unwrap();
+
+    let remote_control_enabled = data.app_state.user_settings().remote_control_enabled;
+    data.sender
+        .send(Message::ControllerCursorEnabled(remote_control_enabled))
+        .map_err(|e| {
+            log::error!("start_default_screenshare: failed to apply remote control setting: {e:?}");
+            "Failed to apply remote control setting".to_string()
+        })?;
+
+    data.sender
+        .send(Message::StartDefaultScreenShare)
+        .map_err(|e| {
+            log::error!("start_default_screenshare: failed to send message: {e:?}");
+            "Failed to start screen share".to_string()
+        })
+}
+
+#[tauri::command(async)]
+fn set_remote_commands_enabled(app: tauri::AppHandle, enabled: bool) {
+    log::info!("remote_commands: setting changed, enabled={enabled}");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    data.app_state
+        .update_user_setting(|s| s.remote_commands_enabled = enabled);
+    drop(data);
+    let _ = app.emit("remote_commands_settings_changed", ());
+}
+
+#[tauri::command(async)]
+fn set_remote_commands_allowed_users(app: tauri::AppHandle, users: Vec<String>) {
+    let mut allowed: Vec<String> = Vec::new();
+    for user in users {
+        let user = user.trim().to_string();
+        if !user.is_empty() && !allowed.contains(&user) {
+            allowed.push(user);
+        }
+    }
+    log::info!("remote_commands: setting changed, allowed users={allowed:?}");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    data.app_state
+        .update_user_setting(|s| s.remote_commands_allowed_users = allowed);
+    drop(data);
+    let _ = app.emit("remote_commands_settings_changed", ());
+}
+
+/// The app-side gate for a remote command (the server checks the same list before
+/// forwarding it). Returns true only when the local switch is on and the sender is
+/// on the local allow-list, or is this very account on another device. Every
+/// command is written to the log, and every accepted action raises a system
+/// notification so it never happens unseen.
+#[tauri::command(async)]
+fn authorize_remote_command(
+    app: tauri::AppHandle,
+    from_user_id: String,
+    from_name: String,
+    command: String,
+    is_self: bool,
+) -> bool {
+    let (enabled, listed) = {
+        let data = app.state::<Mutex<AppData>>();
+        let data = data.lock().unwrap();
+        let settings = data.app_state.user_settings();
+        (
+            settings.remote_commands_enabled,
+            settings
+                .remote_commands_allowed_users
+                .iter()
+                .any(|user| user == &from_user_id),
+        )
+    };
+    let allowed = enabled && (listed || is_self);
+    let is_status = command == "status";
+
+    if !allowed {
+        if !is_status {
+            log::warn!(
+                "remote_commands: REFUSED '{command}' from {from_name} ({from_user_id}): enabled={enabled} listed={listed}"
+            );
+        }
+        return false;
+    }
+    if is_status {
+        return true;
+    }
+
+    log::info!("remote_commands: ACCEPTED '{command}' from {from_name} ({from_user_id})");
+
+    let action = match command.as_str() {
+        "start_share" => "started sharing your screen",
+        "stop_share" => "stopped your screen share",
+        "join" => "made Hopp join a call",
+        "leave" => "made Hopp leave the call",
+        "restart" => "restarted Hopp",
+        _ => "sent a remote command",
+    };
+    let who = if from_name.trim().is_empty() {
+        "A teammate"
+    } else {
+        from_name.trim()
+    };
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title("Hopp remote control")
+        .body(format!("{who} {action}"))
+        .show()
+    {
+        log::warn!("remote_commands: failed to show notification: {e:?}");
+    }
+    true
+}
+
+/// Restarts the whole app (and with it the core process). Used by the "restart"
+/// remote command.
+#[tauri::command(async)]
+fn restart_app(app: tauri::AppHandle) {
+    log::info!("restart_app: restarting Hopp");
+    {
+        let data = app.state::<Mutex<AppData>>();
+        let data = data.lock().unwrap();
+        if let Err(e) = data.sender.send(Message::CallEnd) {
+            log::error!("restart_app: failed to send CallEnd: {e:?}");
+        }
+    }
+    // Goes through the normal exit path first (plugins release the single-instance
+    // lock, the sidecar is stopped), then starts the app again.
+    app.request_restart();
 }
 
 #[tauri::command(async)]
@@ -496,8 +637,11 @@ fn call_started(
     app: tauri::AppHandle,
     audio_token: String,
     video_token: String,
+    force_muted: Option<bool>,
 ) -> Result<(), String> {
     log::info!("call_started");
+    // A call joined by a remote command always starts with mic and camera off.
+    let force_muted = force_muted.unwrap_or(false);
     let data = app.state::<Mutex<AppData>>();
     #[allow(unused_mut)]
     let mut data = data.lock().unwrap();
@@ -541,8 +685,8 @@ fn call_started(
             audio_token: audio_token.clone(),
             video_token: video_token.clone(),
             audio_device_name,
-            start_mic_on_call: Some(user_settings.start_mic_on_call),
-            start_camera_on_call: Some(user_settings.start_camera_on_call),
+            start_mic_on_call: Some(user_settings.start_mic_on_call && !force_muted),
+            start_camera_on_call: Some(user_settings.start_camera_on_call && !force_muted),
         }))
     {
         log::error!("call_started: failed to send: {e:?}");
@@ -1771,6 +1915,11 @@ fn main() {
             bring_windows_to_front,
             open_stats_window,
             quit_app,
+            start_default_screenshare,
+            set_remote_commands_enabled,
+            set_remote_commands_allowed_users,
+            authorize_remote_command,
+            restart_app,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");

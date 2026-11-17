@@ -117,6 +117,8 @@ export interface UserSettings {
   telemetry_enabled: boolean;
   auto_update_enabled: boolean;
   app_veil_applications: AppVeilApplication[];
+  remote_commands_enabled: boolean;
+  remote_commands_allowed_users: string[];
 }
 
 export type CoreRoleChange = "Sharer" | "Controller" | "None";
@@ -196,7 +198,7 @@ export interface CommandMap {
   set_sentry_metadata: { args: { userId: string; appVersion: string }; return: void };
 
   // Call
-  call_started: { args: { audioToken: string; videoToken: string }; return: void };
+  call_started: { args: { audioToken: string; videoToken: string; forceMuted?: boolean }; return: void };
   end_call: { args: void; return: void };
   toggle_call_sleep_prevention: { args: { enabled: boolean }; return: void };
 
@@ -248,6 +250,16 @@ export interface CommandMap {
   // Core socket messages — window management
   bring_windows_to_front: { args: void; return: boolean };
   open_stats_window: { args: void; return: void };
+
+  // Remote commands (allow-listed teammates drive this app from the control page)
+  start_default_screenshare: { args: void; return: void };
+  set_remote_commands_enabled: { args: { enabled: boolean }; return: void };
+  set_remote_commands_allowed_users: { args: { users: string[] }; return: void };
+  authorize_remote_command: {
+    args: { fromUserId: string; fromName: string; command: string; isSelf: boolean };
+    return: boolean;
+  };
+  restart_app: { args: void; return: void };
 }
 
 type InvokeArgs<K extends keyof CommandMap> = CommandMap[K]["args"] extends void ? [] : [CommandMap[K]["args"]];

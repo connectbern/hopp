@@ -19,6 +19,7 @@ import { tauriUtils } from "@/windows/window-utils";
 import { OS, URLS } from "@/constants";
 import posthog from "posthog-js";
 import useStore from "@/store/store";
+import { RemoteAccessSettings } from "./remote-access";
 
 const queryClient = new QueryClient();
 
@@ -404,12 +405,13 @@ function AppVeilSettings({
   );
 }
 
-type SectionId = "call" | "app-veil" | "shortcuts" | "misc";
+type SectionId = "call" | "app-veil" | "shortcuts" | "remote-access" | "misc";
 
 const SECTIONS: { id: SectionId; title: string; macOnly?: boolean }[] = [
   { id: "call", title: "Call settings" },
   { id: "app-veil", title: "App Veil (beta)", macOnly: true },
   { id: "shortcuts", title: "Shortcuts" },
+  { id: "remote-access", title: "Remote access" },
   { id: "misc", title: "Miscellaneous" },
 ];
 
@@ -695,6 +697,10 @@ function SettingsWindow() {
                   onCommit={(accel) => commitShortcut("end_call", accel)}
                 />
               </div>
+            )}
+
+            {section === "remote-access" && (
+              <RemoteAccessSettings settings={settings} onChanged={() => refetchSettings()} />
             )}
 
             {section === "misc" && (

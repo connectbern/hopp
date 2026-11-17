@@ -426,6 +426,9 @@ pub struct Application<'a> {
     share_overlay_enabled: bool,
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
+    /// The display that was picked for the last screen share (not persisted).
+    /// `StartDefaultScreenShare` reuses it when it is still attached.
+    last_display_content: Option<Content>,
     pending_overlay_repair: Option<MonitorId>,
     #[cfg(target_os = "macos")]
     app_veil_host: Option<AppVeilHost>,
@@ -517,6 +520,7 @@ impl<'a> Application<'a> {
             share_overlay_enabled: true,
             clipboard_controller,
             screen_selection: None,
+            last_display_content: None,
             pending_overlay_repair: None,
             #[cfg(target_os = "macos")]
             app_veil_host: None,
@@ -1063,6 +1067,9 @@ impl<'a> Application<'a> {
             window_manager.hide_screen_selection();
         }
         self.screen_selection = None;
+        if matches!(content.content_type, ContentType::Display) {
+            self.last_display_content = Some(content);
+        }
 
         let message = ScreenShareMessage {
             content,
@@ -1313,6 +1320,37 @@ impl<'a> Application<'a> {
         }
     }
 
+    /// The display to share when no picker is shown (`StartDefaultScreenShare`):
+    /// the one shared last if it is still attached, else the primary display,
+    /// else any display.
+    fn default_display_content(&self, event_loop: &ActiveEventLoop) -> Option<Content> {
+        let content_for = |monitor: &MonitorHandle| {
+            ScreenshareFunctions::capture_content_id_for_monitor(monitor).map(|id| Content {
+                content_type: ContentType::Display,
+                id,
+            })
+        };
+        let monitors = event_loop
+            .available_monitors()
+            .collect::<Vec<MonitorHandle>>();
+
+        if let Some(last) = self.last_display_content {
+            if monitors
+                .iter()
+                .filter_map(content_for)
+                .any(|content| content.id == last.id)
+            {
+                return Some(last);
+            }
+        }
+
+        event_loop
+            .primary_monitor()
+            .as_ref()
+            .and_then(content_for)
+            .or_else(|| monitors.iter().find_map(content_for))
+    }
+
     fn display_content_for_selection_window(
         &self,
         event_loop: &ActiveEventLoop,
@@ -1455,6 +1493,33 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             UserEvent::GetAvailableContent => {
                 log::debug!("user_event: GetAvailableContent -> screen selection");
                 self.start_screen_selection(event_loop);
+            }
+            UserEvent::StartDefaultScreenShare => {
+                log::info!("user_event: StartDefaultScreenShare (no picker)");
+                // Same refresh the picker does: the monitor layout may have changed.
+                if let (Some(window_manager), Some(context_manager)) =
+                    (self.window_manager.as_mut(), self.context_manager.as_ref())
+                {
+                    if let Err(error) = window_manager.update(event_loop, context_manager) {
+                        log::warn!(
+                            "user_event: StartDefaultScreenShare: window manager update failed: {error:?}"
+                        );
+                    }
+                }
+                match self.default_display_content(event_loop) {
+                    Some(content) => {
+                        log::info!("user_event: StartDefaultScreenShare -> {content}");
+                        self.select_source(content);
+                    }
+                    None => {
+                        log::error!("user_event: StartDefaultScreenShare: no display found");
+                        if let Err(e) = self.socket.send(Message::StartScreenShareResult(Err(
+                            "No display available to share".to_string(),
+                        ))) {
+                            error!("user_event: Error sending start screen share result: {e:?}");
+                        }
+                    }
+                }
             }
             UserEvent::CallStart(call_start) => {
                 log::info!("user_event: CallStart");
@@ -3193,6 +3258,7 @@ pub enum UserEvent {
     Keystroke(KeystrokeData),
     Scroll(ScrollDelta, String),
     GetAvailableContent,
+    StartDefaultScreenShare,
     Terminate,
     HangProtection,
     CallStart(CallStartMessage),
@@ -3371,6 +3437,7 @@ impl RenderEventLoop {
                     };
                 let user_event = match message {
                     Message::GetAvailableContent => UserEvent::GetAvailableContent,
+                    Message::StartDefaultScreenShare => UserEvent::StartDefaultScreenShare,
                     Message::CallStart(call_start_message) => {
                         UserEvent::CallStart(call_start_message)
                     }

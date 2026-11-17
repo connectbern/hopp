@@ -76,6 +76,14 @@ pub struct UserSettings {
     pub auto_update_enabled: bool,
     #[serde(default = "default_app_veil_applications")]
     pub app_veil_applications: Vec<AppVeilApplication>,
+    /// Remote commands: teammates listed in `remote_commands_allowed_users` may drive
+    /// this app from the server's control page (start/stop the screen share,
+    /// join/leave a call, restart the app). Off unless the user switches it on.
+    #[serde(default)]
+    pub remote_commands_enabled: bool,
+    /// Hopp user ids allowed to send remote commands while the switch above is on.
+    #[serde(default)]
+    pub remote_commands_allowed_users: Vec<String>,
 }
 
 impl Default for UserSettings {
@@ -99,6 +107,8 @@ impl Default for UserSettings {
             telemetry_enabled: true,
             auto_update_enabled: true,
             app_veil_applications: default_app_veil_applications(),
+            remote_commands_enabled: false,
+            remote_commands_allowed_users: Vec::new(),
         }
     }
 }

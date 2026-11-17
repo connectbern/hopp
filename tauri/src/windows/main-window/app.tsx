@@ -33,6 +33,7 @@ import { useDisableNativeContextMenu } from "@/lib/hooks";
 import { processDeepLinkUrl } from "@/lib/deepLinkUtils";
 import { Rooms } from "./tabs/Rooms";
 import { pollUpdates } from "@/lib/auto-update";
+import { RemoteShareBanner, useRemoteCommands } from "@/lib/remote-commands";
 
 function App() {
   const {
@@ -55,6 +56,7 @@ function App() {
 
   const coreProcessCrashedRef = useRef(false);
   useDisableNativeContextMenu();
+  useRemoteCommands();
 
   const { useQuery } = useAPI();
 
@@ -515,6 +517,7 @@ function App() {
         type="scroll"
         className="h-100% overflow-y-scroll overflow-x-hidden w-[350px] relative h-full"
       >
+        <RemoteShareBanner />
         {callTokens && (
           <div className={tab === "call" ? "" : "hidden"}>
             <CallCenter />

@@ -267,6 +267,11 @@ pub enum Message {
     SetShareOverlayEnabled(bool),
     /// Microphone RMS level in [0.0, 1.0], emitted ~1 Hz from core capturer.
     MicrophoneAudioLevel(f32),
+    /// Start sharing a whole display without showing the picker: the display that
+    /// was shared last while this process is running, else the primary one. Used
+    /// for a screen share started by a remote command. The outcome is reported
+    /// with `StartScreenShareResult`, like a share started from the picker.
+    StartDefaultScreenShare,
 }
 
 impl Message {
