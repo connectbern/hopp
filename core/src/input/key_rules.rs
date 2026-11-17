@@ -107,6 +107,131 @@ pub fn swapped_case(key: &str) -> Option<String> {
     (swapped.chars().count() == 1 && swapped != key).then_some(swapped)
 }
 
+/// A modifier key the controller can hold down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModifierKey {
+    Control,
+    Shift,
+    Alt,
+    /// Right Alt on layouts where it is AltGr.
+    AltGraph,
+    Meta,
+}
+
+impl ModifierKey {
+    pub const ALL: [ModifierKey; 5] = [
+        ModifierKey::Control,
+        ModifierKey::Shift,
+        ModifierKey::Alt,
+        ModifierKey::AltGraph,
+        ModifierKey::Meta,
+    ];
+
+    /// The modifier a key string names, if it names one.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "Control" => Some(ModifierKey::Control),
+            "Shift" => Some(ModifierKey::Shift),
+            "Alt" => Some(ModifierKey::Alt),
+            "AltGraph" => Some(ModifierKey::AltGraph),
+            "Meta" | "Super" => Some(ModifierKey::Meta),
+            _ => None,
+        }
+    }
+
+    /// The key string that presses or releases this modifier.
+    pub fn key(self) -> &'static str {
+        match self {
+            ModifierKey::Control => "Control",
+            ModifierKey::Shift => "Shift",
+            ModifierKey::Alt => "Alt",
+            ModifierKey::AltGraph => "AltGraph",
+            ModifierKey::Meta => "Meta",
+        }
+    }
+}
+
+/// The modifier keys that are held down on the sharer's machine because a
+/// controller pressed them.
+///
+/// A controller only forwards key events while its mouse is over the shared
+/// picture. If it presses Ctrl there and releases it somewhere else, the release
+/// never arrives and Ctrl stays down on the sharer: the next Space is Ctrl+Space
+/// (in a PowerShell terminal that completes `npm` to `npm.`), the next click is a
+/// Ctrl+click, and the sharer's own typing turns into shortcuts.
+///
+/// Every key and click event carries the controller's real modifier state, so
+/// the sharer can notice the disagreement and let go of the key.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct HeldModifiers {
+    control: bool,
+    shift: bool,
+    alt: bool,
+    alt_graph: bool,
+    meta: bool,
+}
+
+impl HeldModifiers {
+    /// Records that a modifier key was pressed or released for a controller.
+    pub fn set(&mut self, modifier: ModifierKey, down: bool) {
+        match modifier {
+            ModifierKey::Control => self.control = down,
+            ModifierKey::Shift => self.shift = down,
+            ModifierKey::Alt => self.alt = down,
+            ModifierKey::AltGraph => self.alt_graph = down,
+            ModifierKey::Meta => self.meta = down,
+        }
+    }
+
+    pub fn is_held(&self, modifier: ModifierKey) -> bool {
+        match modifier {
+            ModifierKey::Control => self.control,
+            ModifierKey::Shift => self.shift,
+            ModifierKey::Alt => self.alt,
+            ModifierKey::AltGraph => self.alt_graph,
+            ModifierKey::Meta => self.meta,
+        }
+    }
+
+    /// Takes every modifier that is still held (for "release everything").
+    pub fn take_all(&mut self) -> Vec<ModifierKey> {
+        let held = ModifierKey::ALL
+            .into_iter()
+            .filter(|modifier| self.is_held(*modifier))
+            .collect();
+        *self = HeldModifiers::default();
+        held
+    }
+
+    /// Takes the modifiers that are held here although the controller says, with
+    /// the flags of a later key or click event, that it is not holding them.
+    ///
+    /// AltGr shows up in the flags as Alt (a Windows controller reports AltGr as
+    /// Ctrl+Alt), so it counts as released when Alt is not reported.
+    pub fn take_stale(
+        &mut self,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+        meta: bool,
+    ) -> Vec<ModifierKey> {
+        let mut stale = Vec::new();
+        for modifier in ModifierKey::ALL {
+            let reported_down = match modifier {
+                ModifierKey::Control => ctrl,
+                ModifierKey::Shift => shift,
+                ModifierKey::Alt | ModifierKey::AltGraph => alt,
+                ModifierKey::Meta => meta,
+            };
+            if self.is_held(modifier) && !reported_down {
+                self.set(modifier, false);
+                stale.push(modifier);
+            }
+        }
+        stale
+    }
+}
+
 /// Decides how a remote key event is replayed.
 pub fn plan_key(facts: KeyFacts) -> KeyPlan {
     let KeyFacts {
@@ -470,6 +595,104 @@ mod tests {
             }),
             KeyPlan::Ignore(KeyIgnored::ShortcutWithoutKey)
         );
+    }
+
+    #[test]
+    fn modifier_keys_are_recognised() {
+        assert_eq!(ModifierKey::from_key("Control"), Some(ModifierKey::Control));
+        assert_eq!(ModifierKey::from_key("Shift"), Some(ModifierKey::Shift));
+        assert_eq!(ModifierKey::from_key("Alt"), Some(ModifierKey::Alt));
+        assert_eq!(
+            ModifierKey::from_key("AltGraph"),
+            Some(ModifierKey::AltGraph)
+        );
+        assert_eq!(ModifierKey::from_key("Meta"), Some(ModifierKey::Meta));
+        assert_eq!(ModifierKey::from_key("Super"), Some(ModifierKey::Meta));
+        for key in ["c", " ", "Enter", "CapsLock", "control", ""] {
+            assert_eq!(ModifierKey::from_key(key), None, "{key:?}");
+        }
+        for modifier in ModifierKey::ALL {
+            assert_eq!(ModifierKey::from_key(modifier.key()), Some(modifier));
+        }
+    }
+
+    #[test]
+    fn ctrl_left_down_is_released_before_the_next_plain_key() {
+        // Reported once: typing "npm" then Space produced "npm." in a terminal.
+        // Space with Ctrl down is Ctrl+Space = "complete" in PowerShell, which
+        // turns "npm" into "npm." (npm.cmd / npm.ps1).
+        let mut held = HeldModifiers::default();
+        // The controller pressed Ctrl over the shared picture...
+        held.set(ModifierKey::Control, true);
+        // ...released it elsewhere (no event), then types n, p, m, Space: every
+        // one of those events says "Ctrl is not held".
+        assert_eq!(
+            held.take_stale(false, false, false, false),
+            vec![ModifierKey::Control]
+        );
+        // Released once; the following keys find nothing left to release.
+        assert_eq!(held.take_stale(false, false, false, false), vec![]);
+        assert!(!held.is_held(ModifierKey::Control));
+    }
+
+    #[test]
+    fn modifiers_the_controller_really_holds_are_kept() {
+        let mut held = HeldModifiers::default();
+        held.set(ModifierKey::Control, true);
+        held.set(ModifierKey::Shift, true);
+        // Ctrl+Shift+T: both reported as held.
+        assert_eq!(held.take_stale(true, true, false, false), vec![]);
+        assert!(held.is_held(ModifierKey::Control));
+        assert!(held.is_held(ModifierKey::Shift));
+        // Shift let go (its release got lost), Ctrl still held.
+        assert_eq!(
+            held.take_stale(true, false, false, false),
+            vec![ModifierKey::Shift]
+        );
+        assert!(held.is_held(ModifierKey::Control));
+    }
+
+    #[test]
+    fn alt_gr_follows_the_alt_flag() {
+        let mut held = HeldModifiers::default();
+        // A Windows controller holding AltGr: Ctrl (fake) + AltGr, reported as
+        // Ctrl+Alt with every key.
+        held.set(ModifierKey::Control, true);
+        held.set(ModifierKey::AltGraph, true);
+        assert_eq!(held.take_stale(true, false, true, false), vec![]);
+        // Both releases lost: the next plain key lets go of both.
+        assert_eq!(
+            held.take_stale(false, false, false, false),
+            vec![ModifierKey::Control, ModifierKey::AltGraph]
+        );
+    }
+
+    #[test]
+    fn nothing_held_means_nothing_to_release() {
+        let mut held = HeldModifiers::default();
+        for flags in 0..16 {
+            assert_eq!(
+                held.take_stale(
+                    flags & 1 != 0,
+                    flags & 2 != 0,
+                    flags & 4 != 0,
+                    flags & 8 != 0
+                ),
+                vec![]
+            );
+        }
+        assert_eq!(held.take_all(), vec![]);
+    }
+
+    #[test]
+    fn take_all_releases_everything_once() {
+        let mut held = HeldModifiers::default();
+        held.set(ModifierKey::Meta, true);
+        held.set(ModifierKey::Alt, true);
+        held.set(ModifierKey::Alt, false);
+        held.set(ModifierKey::Shift, true);
+        assert_eq!(held.take_all(), vec![ModifierKey::Shift, ModifierKey::Meta]);
+        assert_eq!(held.take_all(), vec![]);
     }
 
     #[test]

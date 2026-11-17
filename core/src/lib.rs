@@ -1494,6 +1494,11 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     return;
                 }
                 let remote_control = &mut self.remote_control.as_mut().unwrap();
+                // fork: a Ctrl / Shift / Alt whose release never arrived must not
+                // turn this click into a Ctrl+click (see HeldModifiers).
+                remote_control
+                    .keyboard_controller
+                    .release_stale_modifiers(data.ctrl, data.shift, data.alt, data.meta);
                 remote_control
                     .cursor_controller
                     .mouse_click_controller(data, sid.as_str());

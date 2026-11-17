@@ -17,7 +17,7 @@ mod platform;
 pub use platform::{KeyboardEvent, KeyboardLayout};
 
 use super::diagnostics;
-use super::key_rules::{plan_key, swapped_case, KeyFacts, KeyPlan};
+use super::key_rules::{plan_key, swapped_case, HeldModifiers, KeyFacts, KeyPlan, ModifierKey};
 
 // See https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.6.sdk/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Headers/Events.h
 pub enum KeyModifier {
@@ -403,6 +403,17 @@ pub struct KeyboardController<T: KeyboardLayoutTrait> {
     /// Whether keyboard simulation is currently enabled.
     enabled: bool,
     target_process_id: Option<i32>,
+    /// fork: modifier keys currently held down here for a controller, so that one
+    /// whose release never arrived can be let go (see `HeldModifiers`).
+    held_modifiers: HeldModifiers,
+}
+
+/// fork: never leave Ctrl / Shift / Alt / Win held down on the sharer's keyboard
+/// when the share (and with it this controller) ends in the middle of a shortcut.
+impl<T: KeyboardLayoutTrait> Drop for KeyboardController<T> {
+    fn drop(&mut self) {
+        self.release_all_modifiers("the share ended");
+    }
 }
 
 impl<T: KeyboardLayoutTrait> KeyboardController<T> {
@@ -423,6 +434,7 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
             layout,
             enabled: true,
             target_process_id,
+            held_modifiers: HeldModifiers::default(),
         }
     }
 
@@ -437,7 +449,48 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
     /// * `enabled` - `true` to enable simulation, `false` to disable
     pub fn set_enabled(&mut self, enabled: bool) {
         log::info!("set_enabled: {enabled}");
+        if !enabled {
+            // No further key events will be replayed, so no release would arrive.
+            self.release_all_modifiers("remote control was switched off");
+        }
         self.enabled = enabled;
+    }
+
+    /// fork: presses or releases a named key (a modifier) by its key code.
+    fn send_named_key(&self, key: &str, down: bool) {
+        let Some(keycode) = self.map.get_code(key, 0) else {
+            return;
+        };
+        if let Some(event) = KeyboardEvent::new(keycode, 0, down, self.target_process_id) {
+            event.send();
+        }
+    }
+
+    fn release_modifiers(&self, modifiers: Vec<ModifierKey>, why: &str) {
+        for modifier in modifiers {
+            self.send_named_key(modifier.key(), false);
+            diagnostics::modifier_released(modifier.key(), why);
+        }
+    }
+
+    /// fork: lets go of every modifier key held down here for a controller.
+    pub fn release_all_modifiers(&mut self, why: &str) {
+        let held = self.held_modifiers.take_all();
+        self.release_modifiers(held, why);
+    }
+
+    /// fork: lets go of modifier keys that are held down here although the
+    /// controller is not holding them any more. `ctrl` / `shift` / `alt` / `meta`
+    /// are the controller's own modifier state, which comes with every key and
+    /// click event. Needed because a controller only forwards key events while its
+    /// mouse is over the shared picture: a Ctrl pressed there and released
+    /// elsewhere would stay down here (Space became Ctrl+Space, clicks Ctrl+clicks).
+    pub fn release_stale_modifiers(&mut self, ctrl: bool, shift: bool, alt: bool, meta: bool) {
+        if !self.enabled {
+            return;
+        }
+        let stale = self.held_modifiers.take_stale(ctrl, shift, alt, meta);
+        self.release_modifiers(stale, "its release never arrived");
     }
 
     /// Decides how one remote key event is replayed: as text, by key code, or not
@@ -526,6 +579,18 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
             self.map = KeyMap::new(&self.layout);
         }
 
+        // fork: a modifier whose release never arrived must not turn this key into
+        // a shortcut. The modifier keys' own events are left alone here.
+        let modifier_key = ModifierKey::from_key(&keystroke_data.key);
+        if modifier_key.is_none() {
+            self.release_stale_modifiers(
+                keystroke_data.ctrl,
+                keystroke_data.shift,
+                keystroke_data.alt,
+                keystroke_data.meta,
+            );
+        }
+
         let (keycode, as_text) =
             match self.plan_keystroke(&keystroke_data, modifier, cfg!(target_os = "windows")) {
                 KeyPlan::Text(keycode) => (keycode, true),
@@ -561,6 +626,11 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
         }
 
         event.send();
+
+        // fork: remember which modifiers are down here for the controller.
+        if let Some(modifier_key) = modifier_key {
+            self.held_modifiers.set(modifier_key, keystroke_data.down);
+        }
     }
 }
 
@@ -690,6 +760,7 @@ mod key_planning_tests {
             layout,
             enabled: true,
             target_process_id: None,
+            held_modifiers: HeldModifiers::default(),
         }
     }
 
@@ -723,6 +794,39 @@ mod key_planning_tests {
             modifier = extend_modifier(modifier, KeyModifier::Ctrl);
         }
         controller.plan_keystroke(keystroke_data, modifier, true)
+    }
+
+    #[test]
+    fn a_plain_key_lets_go_of_a_ctrl_whose_release_never_arrived() {
+        // "npm" + Space once produced "npm." in a PowerShell terminal: Space with
+        // Ctrl still down is Ctrl+Space (complete -> npm.cmd / npm.ps1 -> "npm.").
+        let mut controller = controller(us_layout());
+        controller.held_modifiers.set(ModifierKey::Control, true);
+        // Typing "n" with no modifier reported by the controller.
+        controller.simulate_keystrokes(keystroke("n", true));
+        assert!(!controller.held_modifiers.is_held(ModifierKey::Control));
+    }
+
+    #[test]
+    fn a_shortcut_keeps_the_ctrl_the_controller_is_holding() {
+        let mut controller = controller(us_layout());
+        controller.held_modifiers.set(ModifierKey::Control, true);
+        let mut ctrl_c = keystroke("c", true);
+        ctrl_c.ctrl = true;
+        controller.simulate_keystrokes(ctrl_c);
+        assert!(controller.held_modifiers.is_held(ModifierKey::Control));
+        // A click that reports no Ctrl (its release got lost) lets go of it.
+        controller.release_stale_modifiers(false, false, false, false);
+        assert!(!controller.held_modifiers.is_held(ModifierKey::Control));
+    }
+
+    #[test]
+    fn switching_remote_control_off_lets_go_of_everything() {
+        let mut controller = controller(us_layout());
+        controller.held_modifiers.set(ModifierKey::Shift, true);
+        controller.held_modifiers.set(ModifierKey::Meta, true);
+        controller.set_enabled(false);
+        assert_eq!(controller.held_modifiers, HeldModifiers::default());
     }
 
     #[test]

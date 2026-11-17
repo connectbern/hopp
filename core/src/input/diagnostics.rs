@@ -270,6 +270,7 @@ struct Global {
     mouse_refused: Burst,
     keys_refused: Burst,
     keys_ignored: Burst,
+    modifiers_released: Burst,
     /// Plain-language reason while nothing can be injected.
     blocked: Option<String>,
     last_block_reminder: Option<Instant>,
@@ -283,6 +284,7 @@ static GLOBAL: Mutex<Global> = Mutex::new(Global {
     mouse_refused: Burst::new(),
     keys_refused: Burst::new(),
     keys_ignored: Burst::new(),
+    modifiers_released: Burst::new(),
     blocked: None,
     last_block_reminder: None,
     block_attempt_seen: false,
@@ -419,6 +421,18 @@ pub fn key_ignored(reason: KeyIgnored, key_name: &str) {
             }
         };
         log::info!("remote_input: ignored {what} ({count} ignored key events since the last line)");
+    }
+}
+
+/// A modifier key (`name`, e.g. "Control") was still held down on this machine for
+/// a controller that no longer holds it, and has been released.
+pub fn modifier_released(name: &str, why: &str) {
+    let now = Instant::now();
+    let mut global = global();
+    if let Some(count) = global.modifiers_released.hit(now, FAILURE_LOG_INTERVAL) {
+        log::info!(
+            "remote_input: released {name}, which was still held down here for the controller ({why}; {count} such releases since the last line)"
+        );
     }
 }
 
