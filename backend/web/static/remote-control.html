@@ -348,9 +348,8 @@
 
         function addLog(text, kind) {
           var log = $("log");
-          if (log.firstChild && log.firstChild.classList && log.firstChild.classList.contains("muted")) {
-            log.removeChild(log.firstChild);
-          }
+          var placeholder = log.querySelector("li.muted");
+          if (placeholder) log.removeChild(placeholder);
           var li = document.createElement("li");
           var t = document.createElement("span");
           t.className = "t";
@@ -361,7 +360,7 @@
           li.appendChild(t);
           li.appendChild(m);
           log.insertBefore(li, log.firstChild);
-          while (log.childNodes.length > 30) log.removeChild(log.lastChild);
+          while (log.children.length > 30) log.removeChild(log.lastElementChild);
         }
 
         function chip(text, kind) {
