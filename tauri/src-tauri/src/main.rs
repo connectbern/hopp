@@ -1207,6 +1207,22 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     log::error!("forward_core_events: failed to emit app veil failed: {e:?}");
                 }
             }
+            Message::RemoteInputNotice(text) => {
+                // fork: a teammate's remote control is blocked on this machine (lock
+                // screen, administrator prompt or window). Tell the person sitting
+                // here; the teammate is told by hopp_core over the call.
+                log::warn!("forward_core_events: remote input notice: {text}");
+                use tauri_plugin_notification::NotificationExt as _;
+                if let Err(e) = app
+                    .notification()
+                    .builder()
+                    .title("Hopp: remote control is blocked")
+                    .body(text)
+                    .show()
+                {
+                    log::warn!("forward_core_events: failed to show notification: {e:?}");
+                }
+            }
             Message::QueryPreferredCamera => {
                 log::info!("forward_core_events: query preferred camera");
                 let data = app.state::<Mutex<AppData>>();

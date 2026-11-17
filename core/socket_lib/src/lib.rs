@@ -250,6 +250,9 @@ pub enum Message {
     RoomConnectionFailed(String),
     /// App Veil could not be initialized; protected apps may be visible while sharing.
     AppVeilFailed(String),
+    /// fork: remote control of this machine is blocked right now (lock screen,
+    /// administrator prompt or window). Plain-language text for a notification.
+    RemoteInputNotice(String),
     ControllerDrawPersistChanged(bool),
     SharerDrawPersistChanged(bool),
     LastModeChanged(StoredMode),

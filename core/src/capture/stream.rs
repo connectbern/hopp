@@ -103,11 +103,35 @@ fn create_capture_callback(
     let mut capture_buffer = NV12Buffer::new(1, 1);
     let mut stream_failed = false;
     let capture_start = std::time::Instant::now();
+    // fork: one line per second with a count instead of one line per failed frame.
+    let mut temporary_errors = crate::input::diagnostics::Burst::new();
     move |result: Result<DesktopFrame, CaptureError>| {
         let frame = match result {
-            Ok(frame) => frame,
+            Ok(frame) => {
+                let unreported = temporary_errors.take_pending();
+                if unreported > 0 {
+                    log::info!(
+                        "Capture frame, temporary error x{unreported} more, then the screen could be read again"
+                    );
+                }
+                frame
+            }
             Err(CaptureError::Temporary) => {
-                log::warn!("Capture frame, temporary error");
+                let reported = temporary_errors.hit(
+                    std::time::Instant::now(),
+                    crate::input::diagnostics::FAILURE_LOG_INTERVAL,
+                );
+                if let Some(count) = reported {
+                    // While the lock screen or an administrator prompt is in front,
+                    // Windows does not let the screen be read: viewers keep the last
+                    // picture. Say so instead of leaving a bare error.
+                    match crate::input::diagnostics::blocked_reason() {
+                        Some(reason) => log::warn!(
+                            "Capture frame, temporary error x{count}: the screen cannot be read because {reason}"
+                        ),
+                        None => log::warn!("Capture frame, temporary error x{count}"),
+                    }
+                }
                 return;
             }
             Err(CaptureError::Permanent) => {

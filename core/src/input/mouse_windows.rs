@@ -6,7 +6,7 @@ use std::sync::{
 use crate::{utils::geometry::Position, MouseClickData, ScrollDelta};
 
 use windows::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WAIT_TIMEOUT, WPARAM},
+    Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WAIT_TIMEOUT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Input::KeyboardAndMouse::{
@@ -25,6 +25,7 @@ use windows::Win32::{
 };
 
 use super::{CursorSimulatorFunctions, SharerCursor, CUSTOM_MOUSE_EVENT};
+use crate::input::{diagnostics, input_state_windows};
 
 // This is safe to do because the callback is not accessed after the hook is set up. It
 // could fail only during destruction if a mouse event is received at the same time.
@@ -259,28 +260,83 @@ impl Drop for MouseObserver {
 }
 
 enum SendInputMessage {
-    Input(INPUT),
+    /// The event to inject and, for an absolute move, the pixel it should take
+    /// the cursor to (used to check that the cursor really went there).
+    Input(INPUT, Option<(i32, i32)>),
     Stop,
 }
 
-fn send_input(input: &[INPUT]) {
+/// fork: the real cursor is compared with the injected position at most this often.
+const CURSOR_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// Rounding slack between the requested pixel and where Windows puts the cursor.
+const CURSOR_CHECK_TOLERANCE: i32 = 3;
+
+/// Returns whether Windows accepted the events.
+fn send_input(input: &[INPUT]) -> bool {
     let input_size = std::mem::size_of::<INPUT>() as i32;
     let input_len = input.len() as u32;
     let result = unsafe { SendInput(input, input_size) };
     if result != input_len {
-        log::error!("send_input: SendInput failed");
+        // fork: read the reason before another call can overwrite it, and write
+        // one line per second with a count instead of one line per event.
+        let last_error = unsafe { GetLastError() }.0;
+        if let Some(count) = diagnostics::mouse_refused() {
+            log::error!(
+                "send_input: SendInput failed x{count} ({result} of {input_len} events accepted): {}",
+                input_state_windows::failure_context(last_error)
+            );
+        }
+        return false;
     }
+    diagnostics::mouse_accepted();
+    true
+}
+
+fn is_button_down(input: &INPUT) -> bool {
+    // SAFETY: only INPUT_MOUSE events are sent through this thread.
+    let flags = unsafe { input.Anonymous.mi.dwFlags };
+    (flags & (MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_MIDDLEDOWN)).0 != 0
+}
+
+/// fork: after an accepted move, is the cursor where the move put it? When Windows
+/// accepts injected input but something else discards it or holds the cursor,
+/// this is the only visible sign.
+fn cursor_followed(target: (i32, i32)) -> Option<bool> {
+    let near = |position: (i32, i32)| {
+        (position.0 - target.0).abs() <= CURSOR_CHECK_TOLERANCE
+            && (position.1 - target.1).abs() <= CURSOR_CHECK_TOLERANCE
+    };
+    if near(input_state_windows::cursor_position()?) {
+        return Some(true);
+    }
+    // Give the system a moment before calling it a miss.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    Some(near(input_state_windows::cursor_position()?))
 }
 
 fn send_input_thread(rx: mpsc::Receiver<SendInputMessage>) {
+    let mut last_cursor_check = std::time::Instant::now();
     loop {
         let msg = rx.recv();
         match msg {
             Ok(SendInputMessage::Stop) => {
                 break;
             }
-            Ok(SendInputMessage::Input(input)) => {
-                send_input(&[input]);
+            Ok(SendInputMessage::Input(input, move_target)) => {
+                if !send_input(&[input]) {
+                    continue;
+                }
+                if is_button_down(&input) {
+                    input_state_windows::check_click_target();
+                }
+                if let Some(target) = move_target {
+                    if last_cursor_check.elapsed() >= CURSOR_CHECK_INTERVAL {
+                        last_cursor_check = std::time::Instant::now();
+                        if let Some(followed) = cursor_followed(target) {
+                            diagnostics::cursor_checked(followed);
+                        }
+                    }
+                }
             }
             _ => {
                 log::error!("send_input_thread: Error receiving message");
@@ -351,6 +407,13 @@ fn mouse_event(flags: MOUSE_EVENT_FLAGS, data: i32, x: i32, y: i32) -> INPUT {
 }
 
 fn coords_to_virtual(x: f32, y: f32) -> (i32, i32) {
+    let (x, y, _) = coords_to_virtual_checked(x, y);
+    (x, y)
+}
+
+/// The normalized coordinates for `SendInput`, and whether the pixel lies on the
+/// virtual screen (only then can the cursor be expected to end up exactly there).
+fn coords_to_virtual_checked(x: f32, y: f32) -> (i32, i32, bool) {
     let virtual_screen_left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
     let virtual_screen_top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
     let virtual_screen_width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
@@ -359,9 +422,13 @@ fn coords_to_virtual(x: f32, y: f32) -> (i32, i32) {
         "coords_to_virtual: virtual_screen_left: {virtual_screen_left}, virtual_screen_top: {virtual_screen_top}, virtual_screen_width: {virtual_screen_width}, virtual_screen_height: {virtual_screen_height}"
     );
 
+    let on_screen = x >= virtual_screen_left as f32
+        && y >= virtual_screen_top as f32
+        && x < (virtual_screen_left + virtual_screen_width) as f32
+        && y < (virtual_screen_top + virtual_screen_height) as f32;
     let x = (x - virtual_screen_left as f32) / virtual_screen_width as f32 * 65535.0;
     let y = (y - virtual_screen_top as f32) / virtual_screen_height as f32 * 65535.0;
-    (x as i32, y as i32)
+    (x as i32, y as i32, on_screen)
 }
 
 fn wheel_translation(value: f64) -> i32 {
@@ -387,14 +454,17 @@ fn wheel_translation(value: f64) -> i32 {
 impl CursorSimulatorFunctions for CursorSimulator {
     fn simulate_cursor_movement(&mut self, position: Position, _click_down: bool) {
         log::debug!("simulate_cursor_movement: {position:?}");
-        let (x, y) = coords_to_virtual(position.x as f32, position.y as f32);
+        let (x, y, on_screen) = coords_to_virtual_checked(position.x as f32, position.y as f32);
         let mouse_event = mouse_event(
             MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
             0,
             x,
             y,
         );
-        let res = self.tx.send(SendInputMessage::Input(mouse_event));
+        let move_target = on_screen.then_some((position.x as i32, position.y as i32));
+        let res = self
+            .tx
+            .send(SendInputMessage::Input(mouse_event, move_target));
         if res.is_err() {
             log::error!("simulate_cursor_movement: Error sending message");
         }
@@ -430,7 +500,7 @@ impl CursorSimulatorFunctions for CursorSimulator {
             x,
             y,
         );
-        let res = self.tx.send(SendInputMessage::Input(mouse_event));
+        let res = self.tx.send(SendInputMessage::Input(mouse_event, None));
         if res.is_err() {
             log::error!("simulate_click: Error sending message");
         }
@@ -478,11 +548,13 @@ impl CursorSimulatorFunctions for CursorSimulator {
         let horizontal_event = mouse_event(MOUSEEVENTF_HWHEEL, data_x, 0, 0);
         let vertical_event = mouse_event(MOUSEEVENTF_WHEEL, data_y, 0, 0);
 
-        let res = self.tx.send(SendInputMessage::Input(horizontal_event));
+        let res = self
+            .tx
+            .send(SendInputMessage::Input(horizontal_event, None));
         if res.is_err() {
             log::error!("simulate_scroll: Error sending message");
         }
-        let res = self.tx.send(SendInputMessage::Input(vertical_event));
+        let res = self.tx.send(SendInputMessage::Input(vertical_event, None));
         if res.is_err() {
             log::error!("simulate_scroll: Error sending message");
         }

@@ -2432,16 +2432,24 @@ async fn handle_room_events(ctx: RoomEventContext) {
                             identity,
                         ))
                     }
-                    ClientEvent::Keystroke(key) => {
-                        event_loop_proxy.send_event(UserEvent::Keystroke(crate::KeystrokeData {
-                            key: key.key[0].clone(),
-                            meta: key.meta,
-                            ctrl: key.ctrl,
-                            shift: key.shift,
-                            alt: key.alt,
-                            down: key.down,
-                        }))
-                    }
+                    ClientEvent::Keystroke(key) => match key.key.first() {
+                        Some(first_key) => event_loop_proxy.send_event(UserEvent::Keystroke(
+                            crate::KeystrokeData {
+                                key: first_key.clone(),
+                                meta: key.meta,
+                                ctrl: key.ctrl,
+                                shift: key.shift,
+                                alt: key.alt,
+                                down: key.down,
+                            },
+                        )),
+                        // fork: a key event without a key used to panic here
+                        // (index out of bounds) and take the sharer's core down.
+                        None => {
+                            log::warn!("handle_room_events: keystroke without a key, ignored");
+                            Ok(())
+                        }
+                    },
                     ClientEvent::WheelEvent(wheel_data) => {
                         event_loop_proxy.send_event(UserEvent::Scroll(
                             crate::ScrollDelta {

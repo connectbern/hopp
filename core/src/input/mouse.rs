@@ -10,6 +10,7 @@ use crate::{
     MouseClickData, ScrollDelta, UserEvent,
 };
 
+use super::diagnostics::{self, Received};
 use log::{debug, error};
 use winit::event_loop::EventLoopProxy;
 
@@ -602,6 +603,15 @@ impl CursorController {
         target_process_id: Option<i32>,
         target_window_id: Option<u32>,
     ) -> Result<Self, CursorControllerError> {
+        // fork: when remote input is blocked (lock screen, administrator prompt or
+        // window), tell the people in the call instead of silently dropping it.
+        let notice_proxy = event_loop_proxy.clone();
+        diagnostics::set_notifier(move |notice| {
+            if let Err(e) = notice_proxy.send_event(UserEvent::RemoteInputNotice(notice)) {
+                error!("CursorController: error sending remote input notice: {e:?}");
+            }
+        });
+
         let controllers_cursors = Arc::new(Mutex::new(vec![]));
         #[cfg(target_os = "macos")]
         let cursor_simulator = Arc::new(Mutex::new(CursorSimulator::new(
@@ -732,6 +742,8 @@ impl CursorController {
     /// * `identity` - Session ID identifying which controller is moving
     pub fn cursor_move_controller(&mut self, x: f64, y: f64, identity: &str) {
         debug!("cursor_move_controller: x: {x} y: {y}");
+        // fork: counted for the rate-limited "remote_input" summary in the log.
+        diagnostics::received(Received::Move, Some(identity));
 
         let local_position = Position { x, y };
         let Some(global_position) = self.overlay_window.source_to_global(local_position) else {
@@ -764,6 +776,7 @@ impl CursorController {
     /// * `click_data` - Complete mouse click information including:
     /// * `identity` - Session ID identifying which controller is clicking
     pub fn mouse_click_controller(&mut self, mut click_data: MouseClickData, identity: &str) {
+        diagnostics::received(Received::Click, Some(identity));
         let Some(global_position) = self.overlay_window.source_to_global(Position {
             x: click_data.x as f64,
             y: click_data.y as f64,
@@ -852,6 +865,7 @@ impl CursorController {
     /// * `identity` - Session ID identifying which controller is scrolling
     pub fn scroll_controller(&mut self, delta: ScrollDelta, identity: &str) {
         debug!("scroll_controller: {delta:?}");
+        diagnostics::received(Received::Scroll, Some(identity));
 
         let mut control_changed = false;
         let mut controllers_cursors = self.controllers_cursors.lock().unwrap();

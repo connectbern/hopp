@@ -35,6 +35,11 @@ fn main() -> Result<(), impl std::error::Error> {
     #[cfg(target_os = "windows")]
     hopp_core::utils::display_power_windows::start_logging();
 
+    // fork: log lock screen / secure desktop changes (remote control is refused
+    // by Windows while they are in front) and flush the remote-input summaries.
+    #[cfg(target_os = "windows")]
+    hopp_core::input::input_state_windows::start_watcher();
+
     let socket_path = match args.socket_path {
         Some(path) => path,
         None => std::env::temp_dir()
