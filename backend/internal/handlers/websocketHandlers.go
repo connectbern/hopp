@@ -185,6 +185,9 @@ func CreateWSHandler(server *common.ServerState) echo.HandlerFunc {
 					rejectInvite(c, server, user.ID, *parsedMessage.InviteRejectMessage)
 				case parsedMessage.InviteCancelMessage != nil:
 					cancelInvite(c, server, user.ID, *parsedMessage.InviteCancelMessage)
+				case parsedMessage.RemoteCommandResult != nil:
+					// The desktop app answers a remote command it was sent
+					handleRemoteCommandResult(c, server, user.ID, *parsedMessage.RemoteCommandResult)
 				default:
 					c.Logger().Warn("Unknown message type")
 				}
@@ -241,7 +244,8 @@ func CreateWSHandler(server *common.ServerState) echo.HandlerFunc {
 						parsedMessage.IncomingInvite != nil,
 						parsedMessage.InviteAcceptMessage != nil,
 						parsedMessage.InviteRejectMessage != nil,
-						parsedMessage.InviteCancelMessage != nil:
+						parsedMessage.InviteCancelMessage != nil,
+						parsedMessage.RemoteCommand != nil:
 						var base messages.BaseMessage
 						if err := json.Unmarshal([]byte(msg.Payload), &base); err != nil {
 							c.Logger().Error("Invalid Redis message:", err)

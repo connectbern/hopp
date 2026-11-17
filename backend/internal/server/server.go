@@ -255,6 +255,7 @@ func (s *Server) runMigrations() {
 		&models.Subscription{},
 		&models.Feedback{},
 		&models.SlackInstallation{},
+		&models.RemoteControlSetting{},
 	)
 	if err != nil {
 		s.Echo.Logger.Fatal(err)
@@ -444,6 +445,13 @@ func (s *Server) setupRoutes() {
 	// LiveKit server endpoint
 	protectedAPI.GET("/livekit/server-url", auth.GetLivekitServerURL)
 
+	// Remote commands: allow-listed teammates drive a user's desktop app
+	// (start/stop share, join/leave, restart). Off unless the user opts in.
+	protectedAPI.GET("/remote-control/settings", auth.GetRemoteControlSettings)
+	protectedAPI.PUT("/remote-control/settings", auth.UpdateRemoteControlSettings)
+	protectedAPI.GET("/remote-control/targets", auth.GetRemoteControlTargets)
+	protectedAPI.POST("/remote-control/:userId/command", auth.SendRemoteCommand)
+
 	// Slack session tokens endpoint (protected - requires JWT)
 	// This is called by the desktop app to get tokens for joining a Slack session
 	protectedAPI.GET("/slack/session/:sessionId/tokens", slackHndlr.GetSessionTokens)
@@ -481,6 +489,14 @@ func (s *Server) setupRoutes() {
 			})
 		})
 	}
+
+	// Standalone control page for remote commands (signs in with the normal
+	// account; every action goes through the protected API above). It lives in
+	// web/static so it is not parsed as a Go template with the rest of web/*.html.
+	s.Echo.GET("/remote-control", func(c echo.Context) error {
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.File("web/static/remote-control.html")
+	})
 
 	// SPA handler - serve index.html for all other routes
 	s.Echo.GET("/*", func(c echo.Context) error {

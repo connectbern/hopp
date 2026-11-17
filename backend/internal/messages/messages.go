@@ -56,6 +56,12 @@ const (
 	MessageTypeInviteReject MessageType = "invite_reject"
 	// Client -> Server -> Client: Cancel a pending invite
 	MessageTypeInviteCancel MessageType = "invite_cancel"
+
+	// Server -> Client: a teammate the user explicitly allow-listed asks the
+	// desktop app to do something (start/stop share, join/leave, restart, status)
+	MessageTypeRemoteCommand MessageType = "remote_command"
+	// Client -> Server: the desktop app's answer to a remote_command
+	MessageTypeRemoteCommandResult MessageType = "remote_command_result"
 )
 
 // BaseMessage represents the common structure of all WebSocket messages
@@ -299,6 +305,44 @@ type InviteCancelMessage struct {
 	} `json:"payload"`
 }
 
+// RemoteCommandPayload is what the target's desktop app receives. FromUserID and
+// FromName are filled in by the server from the sender's JWT, never by a client.
+type RemoteCommandPayload struct {
+	CommandID  string `json:"command_id"`
+	Command    string `json:"command"`
+	FromUserID string `json:"from_user_id"`
+	FromName   string `json:"from_name"`
+	RoomID     string `json:"room_id,omitempty"`
+	IssuedAt   int64  `json:"issued_at"`
+}
+
+// RemoteCommandMessage is a server -> client remote command
+type RemoteCommandMessage struct {
+	Type    MessageType          `json:"type"`
+	Payload RemoteCommandPayload `json:"payload"`
+}
+
+// NewRemoteCommandMessage creates a new remote command message
+func NewRemoteCommandMessage(payload RemoteCommandPayload) RemoteCommandMessage {
+	return RemoteCommandMessage{Type: MessageTypeRemoteCommand, Payload: payload}
+}
+
+// RemoteCommandResultPayload is the desktop app's answer to a remote command.
+// Status is an opaque snapshot of the app (in a call, sharing, ...) that the
+// server hands back to the sender unchanged.
+type RemoteCommandResultPayload struct {
+	CommandID string          `json:"command_id" validate:"required"`
+	OK        bool            `json:"ok"`
+	Message   string          `json:"message,omitempty"`
+	Status    json.RawMessage `json:"status,omitempty"`
+}
+
+// RemoteCommandResultMessage is a client -> server remote command result
+type RemoteCommandResultMessage struct {
+	Type    MessageType                `json:"type"`
+	Payload RemoteCommandResultPayload `json:"payload"`
+}
+
 // ParsedMessage is a union type of all possible message types
 type ParsedMessage struct {
 	Success               *SuccessMessage
@@ -321,6 +365,8 @@ type ParsedMessage struct {
 	InviteAcceptMessage   *InviteAcceptMessage
 	InviteRejectMessage   *InviteRejectMessage
 	InviteCancelMessage   *InviteCancelMessage
+	RemoteCommand         *RemoteCommandMessage
+	RemoteCommandResult   *RemoteCommandResultMessage
 }
 
 // ParseMessage parses a raw message into a ParsedMessage
@@ -435,6 +481,18 @@ func ParseMessage(data []byte) (*ParsedMessage, error) {
 			return nil, err
 		}
 		parsed.InviteCancelMessage = &msg
+	case MessageTypeRemoteCommand:
+		var msg RemoteCommandMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return nil, err
+		}
+		parsed.RemoteCommand = &msg
+	case MessageTypeRemoteCommandResult:
+		var msg RemoteCommandResultMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return nil, err
+		}
+		parsed.RemoteCommandResult = &msg
 	}
 
 	return parsed, nil

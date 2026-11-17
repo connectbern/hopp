@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Hopp remote control</title>
+    <link rel="icon" href="/static/favicon.png" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --card: #ffffff;
+        --fg: #15191e;
+        --muted: #5b6672;
+        --line: #dfe4e9;
+        --accent: #6d28d9;
+        --accent-fg: #ffffff;
+        --ok: #15803d;
+        --warn: #b45309;
+        --bad: #b91c1c;
+        --chip: #eef1f4;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1318;
+          --card: #171c23;
+          --fg: #e9eef3;
+          --muted: #99a4b0;
+          --line: #2a323c;
+          --accent: #a78bfa;
+          --accent-fg: #15101f;
+          --ok: #4ade80;
+          --warn: #fbbf24;
+          --bad: #f87171;
+          --chip: #222a33;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          16px/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+      }
+      main {
+        max-width: 34rem;
+        margin: 0 auto;
+        padding: 1.5rem 1rem 3rem;
+      }
+      h1 {
+        font-size: 1.4rem;
+        margin: 0 0 0.15rem;
+      }
+      h2 {
+        font-size: 1rem;
+        margin: 0 0 0.6rem;
+      }
+      p {
+        margin: 0.4rem 0;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 1rem;
+        margin-top: 1rem;
+      }
+      label {
+        display: block;
+        font-size: 0.9rem;
+        color: var(--muted);
+        margin: 0.6rem 0 0.2rem;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 0.65rem 0.7rem;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        padding: 0.75rem 0.9rem;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--chip);
+        color: var(--fg);
+        cursor: pointer;
+        width: 100%;
+      }
+      button.primary {
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-color: transparent;
+      }
+      button.danger {
+        color: var(--bad);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.6rem;
+      }
+      .row {
+        display: flex;
+        gap: 0.6rem;
+        align-items: center;
+      }
+      .row > select {
+        flex: 1;
+      }
+      .row > button {
+        width: auto;
+        white-space: nowrap;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        margin-top: 0.5rem;
+      }
+      .chip {
+        background: var(--chip);
+        border-radius: 999px;
+        padding: 0.2rem 0.7rem;
+        font-size: 0.88rem;
+      }
+      .chip.ok {
+        color: var(--ok);
+      }
+      .chip.warn {
+        color: var(--warn);
+      }
+      .chip.bad {
+        color: var(--bad);
+      }
+      #log {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        font-size: 0.88rem;
+      }
+      #log li {
+        padding: 0.3rem 0;
+        border-top: 1px solid var(--line);
+      }
+      #log li:first-child {
+        border-top: 0;
+      }
+      #log .t {
+        color: var(--muted);
+        margin-right: 0.4rem;
+      }
+      #log .bad {
+        color: var(--bad);
+      }
+      #log .ok {
+        color: var(--ok);
+      }
+      .hidden {
+        display: none !important;
+      }
+      .top {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 1rem;
+      }
+      .linkish {
+        background: none;
+        border: 0;
+        padding: 0;
+        width: auto;
+        color: var(--muted);
+        text-decoration: underline;
+        font-weight: 400;
+        font-size: 0.9rem;
+      }
+      .err {
+        color: var(--bad);
+        font-size: 0.9rem;
+        min-height: 1.2rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="top">
+        <h1>Hopp remote control</h1>
+        <button id="signout" class="linkish hidden" type="button">Sign out</button>
+      </div>
+      <p class="muted" id="whoami">Control a teammate's Hopp app from here, if they allowed you to.</p>
+
+      <!-- Sign in -->
+      <section id="login" class="card hidden">
+        <h2>Sign in</h2>
+        <p class="muted">Use your normal Hopp account on this server.</p>
+        <form id="login-form">
+          <label for="email">Email</label>
+          <input id="email" type="email" autocomplete="username" required />
+          <label for="password">Password</label>
+          <input id="password" type="password" autocomplete="current-password" required />
+          <p class="err" id="login-error"></p>
+          <button class="primary" type="submit">Sign in</button>
+        </form>
+      </section>
+
+      <!-- Nobody allowed you -->
+      <section id="empty" class="card hidden">
+        <h2>Nobody has allowed you yet</h2>
+        <p>A teammate has to switch this on in their own Hopp app first:</p>
+        <p class="muted">
+          Settings → Remote access → "Allow trusted people to control my Hopp remotely", then tick your name. Their app
+          has to be a build that has this setting. Yours can be any version.
+        </p>
+        <button id="reload" type="button">Check again</button>
+      </section>
+
+      <!-- Control panel -->
+      <section id="panel" class="hidden">
+        <div class="card">
+          <label for="target" style="margin-top: 0">Whose Hopp</label>
+          <select id="target"></select>
+          <div class="chips" id="status"></div>
+          <p class="muted" id="status-note"></p>
+        </div>
+
+        <div class="card">
+          <h2>Call</h2>
+          <div class="row">
+            <select id="room" aria-label="Room"></select>
+            <button id="btn-join-room" type="button">Join room</button>
+          </div>
+          <div class="grid" style="margin-top: 0.6rem">
+            <button id="btn-join-me" type="button">Join my call</button>
+            <button id="btn-leave" type="button">Leave call</button>
+          </div>
+          <p class="muted">
+            "Join my call" brings them into the call you are in right now in your own Hopp app. They always join with
+            microphone and camera off.
+          </p>
+        </div>
+
+        <div class="card">
+          <h2>Their screen</h2>
+          <div class="grid">
+            <button id="btn-start" class="primary" type="button">Start screen share</button>
+            <button id="btn-stop" type="button">Stop screen share</button>
+          </div>
+          <p class="muted">
+            They have to be in a call first. To see the screen, be in the same call with your own Hopp app.
+          </p>
+        </div>
+
+        <div class="card">
+          <h2>App</h2>
+          <button id="btn-restart" class="danger" type="button">Restart their Hopp</button>
+          <p class="muted">Ends their call and reopens the app. It is back online after a few seconds.</p>
+        </div>
+
+        <div class="card">
+          <h2>Activity</h2>
+          <ul id="log">
+            <li class="muted">Nothing yet.</li>
+          </ul>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      (function () {
+        "use strict";
+
+        var OWN_TOKEN_KEY = "hopp-remote-control-token";
+        var token = null;
+        var me = null;
+        var targets = [];
+        var busy = false;
+        var lastStatus = null;
+        var pollTimer = null;
+
+        function $(id) {
+          return document.getElementById(id);
+        }
+        function show(id, on) {
+          $(id).classList.toggle("hidden", !on);
+        }
+
+        // The dashboard keeps its login in localStorage ("hopp-store"); reuse it so
+        // someone who is already signed in does not have to sign in again.
+        function findToken() {
+          try {
+            var own = localStorage.getItem(OWN_TOKEN_KEY);
+            if (own) return own;
+            var raw = localStorage.getItem("hopp-store");
+            if (raw) {
+              var parsed = JSON.parse(raw);
+              if (parsed && parsed.state && typeof parsed.state.authToken === "string" && parsed.state.authToken) {
+                return parsed.state.authToken;
+              }
+            }
+          } catch (e) {
+            /* ignore */
+          }
+          return null;
+        }
+
+        function api(method, path, body) {
+          var headers = { Authorization: "Bearer " + token };
+          if (body !== undefined) headers["Content-Type"] = "application/json";
+          return fetch(path, {
+            method: method,
+            headers: headers,
+            body: body !== undefined ? JSON.stringify(body) : undefined,
+            cache: "no-store",
+          }).then(function (res) {
+            return res.text().then(function (text) {
+              var data = null;
+              try {
+                data = text ? JSON.parse(text) : null;
+              } catch (e) {
+                data = null;
+              }
+              return { status: res.status, ok: res.ok, data: data, text: text };
+            });
+          });
+        }
+
+        function addLog(text, kind) {
+          var log = $("log");
+          if (log.firstChild && log.firstChild.classList && log.firstChild.classList.contains("muted")) {
+            log.removeChild(log.firstChild);
+          }
+          var li = document.createElement("li");
+          var t = document.createElement("span");
+          t.className = "t";
+          t.textContent = new Date().toLocaleTimeString();
+          var m = document.createElement("span");
+          if (kind) m.className = kind;
+          m.textContent = text;
+          li.appendChild(t);
+          li.appendChild(m);
+          log.insertBefore(li, log.firstChild);
+          while (log.childNodes.length > 30) log.removeChild(log.lastChild);
+        }
+
+        function chip(text, kind) {
+          var el = document.createElement("span");
+          el.className = "chip" + (kind ? " " + kind : "");
+          el.textContent = text;
+          return el;
+        }
+
+        function currentTarget() {
+          var id = $("target").value;
+          for (var i = 0; i < targets.length; i++) if (targets[i].id === id) return targets[i];
+          return null;
+        }
+
+        function targetName(t) {
+          if (!t) return "";
+          var name = (t.first_name + " " + t.last_name).trim();
+          return t.is_self ? name + " (you, on your other computer)" : name;
+        }
+
+        function renderStatus(res) {
+          var box = $("status");
+          while (box.firstChild) box.removeChild(box.firstChild);
+          var note = "";
+          lastStatus = null;
+
+          if (!res) {
+            box.appendChild(chip("Checking…"));
+          } else if (!res.online) {
+            box.appendChild(chip("Offline", "bad"));
+            note = "Their Hopp app is closed or not connected. Nothing can be sent until it is running.";
+          } else if (!res.delivered) {
+            box.appendChild(chip("Online", "ok"));
+            box.appendChild(chip("Not answering", "warn"));
+            note = res.message || "";
+          } else if (!res.ok) {
+            box.appendChild(chip("Online", "ok"));
+            box.appendChild(chip("Refused", "warn"));
+            note = res.message || "";
+          } else {
+            var s = res.status || {};
+            lastStatus = s;
+            box.appendChild(chip("Online", "ok"));
+            if (s.in_call) {
+              box.appendChild(chip(s.room_name ? "In room: " + s.room_name : "In a call", "ok"));
+            } else {
+              box.appendChild(chip("Not in a call"));
+            }
+            if (s.sharing) {
+              box.appendChild(chip(s.remote_share ? "Sharing screen (started remotely)" : "Sharing screen", "warn"));
+            } else if (s.in_call) {
+              box.appendChild(chip("Not sharing"));
+            }
+            if (s.build) note = "Hopp build " + s.build;
+          }
+          $("status-note").textContent = note;
+          updateButtons();
+        }
+
+        function updateButtons() {
+          var t = currentTarget();
+          var live = !!(t && lastStatus);
+          var inCall = live && !!lastStatus.in_call;
+          var sharing = live && !!lastStatus.sharing;
+          $("btn-join-room").disabled = busy || !live || !$("room").value;
+          $("btn-join-me").disabled = busy || !live || (t && t.is_self);
+          $("btn-leave").disabled = busy || !inCall;
+          $("btn-start").disabled = busy || !inCall || sharing;
+          $("btn-stop").disabled = busy || !sharing;
+          $("btn-restart").disabled = busy || !live;
+        }
+
+        function sendCommand(command, extra) {
+          var t = currentTarget();
+          if (!t) return Promise.resolve(null);
+          var body = { command: command };
+          if (extra) for (var k in extra) body[k] = extra[k];
+          return api("POST", "/api/auth/remote-control/" + encodeURIComponent(t.id) + "/command", body);
+        }
+
+        function pollStatus() {
+          if (busy || document.visibilityState !== "visible" || !currentTarget()) return Promise.resolve();
+          var asked = $("target").value;
+          return sendCommand("status")
+            .then(function (res) {
+              if (!res || asked !== $("target").value) return;
+              if (res.status === 401) return signOut();
+              if (res.status === 403) {
+                addLog("You are no longer allowed to control this person.", "bad");
+                return loadTargets();
+              }
+              if (res.ok && res.data) renderStatus(res.data);
+            })
+            .catch(function () {
+              /* network blip, next poll retries */
+            });
+        }
+
+        var labels = {
+          start_share: "Start screen share",
+          stop_share: "Stop screen share",
+          join: "Join",
+          leave: "Leave call",
+          restart: "Restart Hopp",
+        };
+
+        function run(command, extra) {
+          if (busy) return;
+          var t = currentTarget();
+          if (!t) return;
+          busy = true;
+          updateButtons();
+          var label = labels[command] + " → " + (t.first_name || "them");
+          sendCommand(command, extra)
+            .then(function (res) {
+              if (!res) return;
+              if (res.status === 401) {
+                signOut();
+                return;
+              }
+              if (!res.ok) {
+                var msg = (res.data && (res.data.message || res.data.error)) || res.text || "Error " + res.status;
+                addLog(label + ": " + msg, "bad");
+                return;
+              }
+              var d = res.data || {};
+              if (!d.online) addLog(label + ": their Hopp app is not connected.", "bad");
+              else if (!d.delivered) addLog(label + ": " + (d.message || "no answer from their app."), "bad");
+              else addLog(label + ": " + (d.message || (d.ok ? "done" : "failed")), d.ok ? "ok" : "bad");
+              if (d.delivered && d.status) renderStatus(d);
+            })
+            .catch(function () {
+              addLog(label + ": could not reach the server.", "bad");
+            })
+            .then(function () {
+              busy = false;
+              updateButtons();
+              setTimeout(pollStatus, command === "restart" ? 6000 : 1500);
+            });
+        }
+
+        function loadRooms() {
+          return api("GET", "/api/auth/rooms").then(function (res) {
+            var sel = $("room");
+            while (sel.firstChild) sel.removeChild(sel.firstChild);
+            var rooms = res.ok && Array.isArray(res.data) ? res.data : [];
+            rooms.sort(function (a, b) {
+              return String(a.name).localeCompare(String(b.name));
+            });
+            if (!rooms.length) {
+              var none = document.createElement("option");
+              none.value = "";
+              none.textContent = "No rooms yet (create one in Hopp)";
+              sel.appendChild(none);
+            }
+            rooms.forEach(function (room) {
+              var opt = document.createElement("option");
+              opt.value = room.id;
+              opt.textContent = room.name;
+              sel.appendChild(opt);
+            });
+          });
+        }
+
+        function loadTargets() {
+          return api("GET", "/api/auth/remote-control/targets").then(function (res) {
+            if (res.status === 401) return signOut();
+            if (res.status === 404) {
+              show("panel", false);
+              show("empty", true);
+              return;
+            }
+            targets = res.ok && res.data && Array.isArray(res.data.targets) ? res.data.targets : [];
+            var sel = $("target");
+            var previous = sel.value;
+            while (sel.firstChild) sel.removeChild(sel.firstChild);
+            targets.forEach(function (t) {
+              var opt = document.createElement("option");
+              opt.value = t.id;
+              opt.textContent = targetName(t);
+              sel.appendChild(opt);
+            });
+            if (previous) sel.value = previous;
+            if (!sel.value && targets.length) sel.value = targets[0].id;
+            show("empty", targets.length === 0);
+            show("panel", targets.length > 0);
+            if (targets.length) {
+              renderStatus(null);
+              return pollStatus();
+            }
+          });
+        }
+
+        function start() {
+          show("login", false);
+          api("GET", "/api/auth/user")
+            .then(function (res) {
+              if (!res.ok || !res.data) return signOut();
+              me = res.data;
+              $("whoami").textContent =
+                "Signed in as " + (me.first_name || "") + " " + (me.last_name || "") + " (" + (me.email || "") + ")";
+              show("signout", true);
+              return Promise.all([loadRooms(), loadTargets()]);
+            })
+            .catch(function () {
+              $("whoami").textContent = "Could not reach the server. Reload to try again.";
+            });
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = setInterval(pollStatus, 5000);
+        }
+
+        function signOut() {
+          try {
+            localStorage.removeItem(OWN_TOKEN_KEY);
+          } catch (e) {
+            /* ignore */
+          }
+          token = null;
+          me = null;
+          targets = [];
+          if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+          show("panel", false);
+          show("empty", false);
+          show("signout", false);
+          show("login", true);
+          $("whoami").textContent = "Control a teammate's Hopp app from here, if they allowed you to.";
+        }
+
+        $("login-form").addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          $("login-error").textContent = "";
+          fetch("/api/sign-in", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: $("email").value.trim(), password: $("password").value }),
+          })
+            .then(function (res) {
+              return res
+                .json()
+                .catch(function () {
+                  return null;
+                })
+                .then(function (data) {
+                  if (!res.ok || !data || !data.token) {
+                    $("login-error").textContent =
+                      res.status === 429 ? "Too many attempts, wait a minute." : "Wrong email or password.";
+                    return;
+                  }
+                  token = data.token;
+                  try {
+                    localStorage.setItem(OWN_TOKEN_KEY, token);
+                  } catch (e) {
+                    /* ignore */
+                  }
+                  $("password").value = "";
+                  start();
+                });
+            })
+            .catch(function () {
+              $("login-error").textContent = "Could not reach the server.";
+            });
+        });
+
+        $("signout").addEventListener("click", signOut);
+        $("reload").addEventListener("click", function () {
+          loadTargets();
+        });
+        $("target").addEventListener("change", function () {
+          renderStatus(null);
+          pollStatus();
+        });
+        $("room").addEventListener("change", updateButtons);
+        $("btn-join-room").addEventListener("click", function () {
+          run("join", { room_id: $("room").value });
+        });
+        $("btn-join-me").addEventListener("click", function () {
+          run("join");
+        });
+        $("btn-leave").addEventListener("click", function () {
+          run("leave");
+        });
+        $("btn-start").addEventListener("click", function () {
+          run("start_share");
+        });
+        $("btn-stop").addEventListener("click", function () {
+          run("stop_share");
+        });
+        $("btn-restart").addEventListener("click", function () {
+          var t = currentTarget();
+          if (
+            t &&
+            window.confirm(
+              "Restart Hopp on " + (t.first_name || "their") + "'s computer? This ends their current call.",
+            )
+          )
+            run("restart");
+        });
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "visible") pollStatus();
+        });
+
+        token = findToken();
+        if (token) start();
+        else show("login", true);
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+# Fork backend image.
+#
+# The upstream release image with only the server binary replaced (built from this
+# tree) and the remote-control page added. The web dashboard, e-mail templates and
+# static files stay byte-identical to the upstream release, so the dashboard does
+# not have to be rebuilt.
+#
+#   docker build -f Dockerfile.fork -t hopp-backend-fork:v1.0.33-chagai.3 .
+ARG UPSTREAM_IMAGE=iparaskev/hopp-backend:v1.0.33
+ARG GO_IMAGE=golang:1.25-bookworm
+
+FROM ${GO_IMAGE} AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/server ./main.go
+
+FROM ${UPSTREAM_IMAGE}
+WORKDIR /app
+COPY --from=builder /out/server ./server
+COPY web/static/remote-control.html ./web/static/remote-control.html
