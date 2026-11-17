@@ -16,6 +16,9 @@ mod platform;
 
 pub use platform::{KeyboardEvent, KeyboardLayout};
 
+use super::diagnostics;
+use super::key_rules::{plan_key, swapped_case, KeyFacts, KeyPlan};
+
 // See https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.6.sdk/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Headers/Events.h
 pub enum KeyModifier {
     Cmd = 1 << 8,
@@ -320,6 +323,26 @@ impl KeyMap {
             modifier &= !(KeyModifier::Ctrl as u32);
         }
 
+        if let Some(code) = self.find_entry(key, modifier) {
+            return Some(code);
+        }
+
+        /*
+         * fork: with Caps Lock on at the controller a letter arrives in the other
+         * case than its Shift state says (Ctrl+C is sent as "C" without Shift).
+         * The key is the same one, so look the letter up in its other case.
+         */
+        if let Some(other_case) = swapped_case(key) {
+            if let Some(code) = self.find_entry(&other_case, modifier) {
+                return Some(code);
+            }
+        }
+
+        None
+    }
+
+    /// Looks `key` up with exactly these modifiers; on Windows also without Alt.
+    fn find_entry(&self, key: &str, modifier: u32) -> Option<u16> {
         for entry in self.entries.iter() {
             if entry.key == key && entry.modifiers == modifier {
                 return Some(entry.keycode);
@@ -343,6 +366,11 @@ impl KeyMap {
         }
 
         None
+    }
+
+    /// True for the platform's layout-independent keys (Enter, arrows, F-keys...).
+    fn is_independent(&self, key: &str) -> bool {
+        self.independent_codes.contains_key(key)
     }
 }
 
@@ -412,6 +440,29 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
         self.enabled = enabled;
     }
 
+    /// Decides how one remote key event is replayed: as text, by key code, or not
+    /// at all. Pure (no key is pressed here), so it is unit tested.
+    ///
+    /// `text_key_up` is true on platforms where typed text gets a matching text
+    /// key-up (Windows).
+    fn plan_keystroke(
+        &self,
+        keystroke_data: &KeystrokeData,
+        modifier: u32,
+        text_key_up: bool,
+    ) -> KeyPlan {
+        plan_key(KeyFacts {
+            key: &keystroke_data.key,
+            down: keystroke_data.down,
+            meta: keystroke_data.meta,
+            alt: keystroke_data.alt,
+            ctrl: keystroke_data.ctrl,
+            code: self.map.get_code(&keystroke_data.key, modifier),
+            layout_independent: self.map.is_independent(&keystroke_data.key),
+            text_key_up,
+        })
+    }
+
     /// Simulates a keystroke from high-level keystroke data.
     ///
     /// This method translates the provided keystroke data into platform-specific
@@ -448,6 +499,9 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
     /// kill the session if a button is not working.
     pub fn simulate_keystrokes(&mut self, keystroke_data: KeystrokeData) {
         log::debug!("simulate_keystrokes: key: {keystroke_data:?}");
+        // fork: counted for the rate-limited "remote_input" summary in the log
+        // (a count only; the key itself is never written at info level).
+        diagnostics::received(diagnostics::Received::Key, None);
         if !self.enabled {
             return;
         }
@@ -472,16 +526,17 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
             self.map = KeyMap::new(&self.layout);
         }
 
-        let keycode = match self.map.get_code(&keystroke_data.key, modifier) {
-            Some(keycode) => keycode,
-            None => {
-                log::warn!(
-                    "simulate_keystrokes: failed to get keycode for key: {}",
-                    keystroke_data.key
-                );
-                0
-            }
-        };
+        let (keycode, as_text) =
+            match self.plan_keystroke(&keystroke_data, modifier, cfg!(target_os = "windows")) {
+                KeyPlan::Text(keycode) => (keycode, true),
+                KeyPlan::Code(keycode) => (keycode, false),
+                KeyPlan::Ignore(reason) => {
+                    // Counted and logged rate limited; named keys by name, never a
+                    // typed character.
+                    diagnostics::key_ignored(reason, &keystroke_data.key);
+                    return;
+                }
+            };
 
         let event = KeyboardEvent::new(
             keycode,
@@ -496,61 +551,12 @@ impl<T: KeyboardLayoutTrait> KeyboardController<T> {
         let mut event = event.unwrap();
 
         /*
-         * We only overwrite the utf string for non layout independent keys
-         * in order to handle where the case where the sharer is using different
-         * keyboard layout from the viewer.
-         *
-         * When cmd or ctrl are pressed no visible characters are inserted.
+         * Characters are typed as text (the utf string overrides what the key
+         * code would produce) so that it does not matter whether the sharer uses
+         * a different keyboard layout from the viewer. Which keys count as text
+         * is decided in key_rules::plan_key: never a named key, never a shortcut.
          */
-        if (keystroke_data.key != "Enter")
-            && (keystroke_data.key != "Tab")
-            && (keystroke_data.key != "Backspace")
-            && (keystroke_data.key != "Escape")
-            && (keystroke_data.key != "Delete")
-            && (keystroke_data.key != "ArrowLeft")
-            && (keystroke_data.key != "ArrowRight")
-            && (keystroke_data.key != "ArrowUp")
-            && (keystroke_data.key != "ArrowDown")
-            && (keystroke_data.key != "PageUp")
-            && (keystroke_data.key != "PageDown")
-            && (keystroke_data.key != "Home")
-            && (keystroke_data.key != "End")
-            && (keystroke_data.key != "Control")
-            && (keystroke_data.key != "Shift")
-            && !matches!(
-                keystroke_data.key.as_str(),
-                "F1" | "F2"
-                    | "F3"
-                    | "F4"
-                    | "F5"
-                    | "F6"
-                    | "F7"
-                    | "F8"
-                    | "F9"
-                    | "F10"
-                    | "F11"
-                    | "F12"
-                    | "F13"
-                    | "F14"
-                    | "F15"
-                    | "F16"
-                    | "F17"
-                    | "F18"
-                    | "F19"
-                    | "F20"
-            )
-            && (!keystroke_data.key.is_empty())
-            && !keystroke_data.meta
-            && !keystroke_data.alt
-            && !keystroke_data.ctrl
-            // fork: on Windows the release is sent as a Unicode key-up too, so every
-            // Unicode key-down gets its matching key-up (before, the release went out
-            // as a plain key-up of a key that was never pressed, or of key code 0).
-            // Only for single characters, so named keys ("Alt", "Meta", ...) keep their
-            // normal virtual-key release.
-            && (keystroke_data.down
-                || (cfg!(target_os = "windows") && keystroke_data.key.chars().count() == 1))
-        {
+        if as_text {
             event.override_utf(&keystroke_data.key);
         }
 
@@ -566,5 +572,326 @@ mod keyboard_tests {
     fn test_keyboard_simulator() {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
         let _ = KeyboardController::<KeyboardLayout>::new(None);
+    }
+}
+
+/// fork: tests for how remote key events are planned, against fake keyboard
+/// layouts (no OS keyboard API involved, so they run on any platform).
+#[cfg(test)]
+mod key_planning_tests {
+    use super::*;
+    use crate::input::diagnostics::KeyIgnored;
+
+    // Key codes of the fake layouts. They mimic Windows virtual-key codes where
+    // those are below 128 (the non-Windows scan range); the punctuation keys
+    // (0xBA.. on Windows) get stand-in codes below 128.
+    const KEY_SPACE: u16 = 0x20;
+    const KEY_2: u16 = 0x32;
+    const KEY_C: u16 = 0x43;
+    const KEY_COMMA: u16 = 0x5C;
+    const KEY_PERIOD: u16 = 0x5E;
+    const KEY_QUOTE: u16 = 0x5F;
+    const KEY_A_UMLAUT: u16 = 0x7B;
+    const KEY_ENTER: u16 = 0x0D;
+    const KEY_CAPS_LOCK: u16 = 0x14;
+    const KEY_INSERT: u16 = 0x2D;
+    const KEY_F5: u16 = 0x74;
+
+    const NONE: u32 = 0;
+    const SHIFT: u32 = KeyModifier::Shift as u32;
+    const ALT_GR: u32 = KeyModifier::Option as u32;
+
+    /// A layout described by (key code, modifiers, produced text) rows.
+    struct FakeLayout {
+        rows: Vec<(u16, u32, &'static str)>,
+        /// Whether " " is listed as a layout-independent key (as on Windows).
+        space_is_independent: bool,
+    }
+
+    impl KeyboardLayoutTrait for FakeLayout {
+        fn key_translate(&self, keycode: u16, modifier: u32) -> Option<String> {
+            self.rows
+                .iter()
+                .find(|(code, modifiers, _)| *code == keycode && *modifiers == modifier)
+                .map(|(_, _, text)| text.to_string())
+        }
+
+        fn has_changed(&mut self) -> bool {
+            false
+        }
+
+        fn get_independent_codes(&self) -> HashMap<&'static str, u16> {
+            let mut codes = HashMap::new();
+            codes.insert("Enter", KEY_ENTER);
+            codes.insert("CapsLock", KEY_CAPS_LOCK);
+            codes.insert("Insert", KEY_INSERT);
+            codes.insert("F5", KEY_F5);
+            if self.space_is_independent {
+                codes.insert(" ", KEY_SPACE);
+            }
+            codes
+        }
+    }
+
+    fn letters() -> Vec<(u16, u32, &'static str)> {
+        vec![
+            (KEY_C, NONE, "c"),
+            (KEY_C, SHIFT, "C"),
+            (KEY_SPACE, NONE, " "),
+            (KEY_SPACE, SHIFT, " "),
+        ]
+    }
+
+    /// US QWERTY, the keys that matter here.
+    fn us_layout() -> FakeLayout {
+        let mut rows = letters();
+        rows.extend([
+            (KEY_2, NONE, "2"),
+            (KEY_2, SHIFT, "@"),
+            (KEY_COMMA, NONE, ","),
+            (KEY_COMMA, SHIFT, "<"),
+            (KEY_PERIOD, NONE, "."),
+            (KEY_PERIOD, SHIFT, ">"),
+            (KEY_QUOTE, NONE, "'"),
+            (KEY_QUOTE, SHIFT, "\""),
+        ]);
+        FakeLayout {
+            rows,
+            space_is_independent: true,
+        }
+    }
+
+    /// Swiss German: ; and : are Shift+comma / Shift+period, @ is AltGr+2,
+    /// ä has its own key with à on Shift.
+    fn swiss_german_layout() -> FakeLayout {
+        let mut rows = letters();
+        rows.extend([
+            (KEY_2, NONE, "2"),
+            (KEY_2, SHIFT, "\""),
+            (KEY_2, ALT_GR, "@"),
+            (KEY_COMMA, NONE, ","),
+            (KEY_COMMA, SHIFT, ";"),
+            (KEY_PERIOD, NONE, "."),
+            (KEY_PERIOD, SHIFT, ":"),
+            (KEY_QUOTE, NONE, "'"),
+            (KEY_QUOTE, SHIFT, "?"),
+            (KEY_A_UMLAUT, NONE, "ä"),
+            (KEY_A_UMLAUT, SHIFT, "à"),
+        ]);
+        FakeLayout {
+            rows,
+            space_is_independent: true,
+        }
+    }
+
+    fn controller(layout: FakeLayout) -> KeyboardController<FakeLayout> {
+        KeyboardController {
+            map: KeyMap::new(&layout),
+            layout,
+            enabled: true,
+            target_process_id: None,
+        }
+    }
+
+    fn keystroke(key: &str, down: bool) -> KeystrokeData {
+        KeystrokeData {
+            key: key.to_string(),
+            meta: false,
+            shift: false,
+            ctrl: false,
+            alt: false,
+            down,
+        }
+    }
+
+    /// Plans a key the way `simulate_keystrokes` does on Windows.
+    fn plan(
+        controller: &KeyboardController<FakeLayout>,
+        keystroke_data: &KeystrokeData,
+    ) -> KeyPlan {
+        let mut modifier = 0;
+        if keystroke_data.shift {
+            modifier = extend_modifier(modifier, KeyModifier::Shift);
+        }
+        if keystroke_data.meta {
+            modifier = extend_modifier(modifier, KeyModifier::Cmd);
+        }
+        if keystroke_data.alt {
+            modifier = extend_modifier(modifier, KeyModifier::Option);
+        }
+        if keystroke_data.ctrl {
+            modifier = extend_modifier(modifier, KeyModifier::Ctrl);
+        }
+        controller.plan_keystroke(keystroke_data, modifier, true)
+    }
+
+    #[test]
+    fn caps_lock_types_nothing() {
+        for layout in [us_layout(), swiss_german_layout()] {
+            let controller = controller(layout);
+            for down in [true, false] {
+                assert_eq!(
+                    plan(&controller, &keystroke("CapsLock", down)),
+                    KeyPlan::Ignore(KeyIgnored::LockKey)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn typing_continues_normally_around_caps_lock() {
+        // Controller: CapsLock, then the C key (arrives as "C" without Shift),
+        // CapsLock again, then C (arrives as "c").
+        let controller = controller(us_layout());
+        assert_eq!(
+            plan(&controller, &keystroke("CapsLock", true)),
+            KeyPlan::Ignore(KeyIgnored::LockKey)
+        );
+        // "C" without Shift is not in the layout as such; the other-case lookup
+        // still finds the C key, and it is typed as the text "C".
+        assert_eq!(
+            plan(&controller, &keystroke("C", true)),
+            KeyPlan::Text(KEY_C)
+        );
+        assert_eq!(
+            plan(&controller, &keystroke("c", true)),
+            KeyPlan::Text(KEY_C)
+        );
+    }
+
+    #[test]
+    fn ctrl_c_works_with_caps_lock_on_at_the_controller() {
+        let controller = controller(us_layout());
+        let mut ctrl_c = keystroke("C", true);
+        ctrl_c.ctrl = true;
+        assert_eq!(plan(&controller, &ctrl_c), KeyPlan::Code(KEY_C));
+    }
+
+    #[test]
+    fn space_is_pressed_as_the_space_key() {
+        for layout in [us_layout(), swiss_german_layout()] {
+            let controller = controller(layout);
+            // Single, double and shifted presses all plan the same real key.
+            let mut events = Vec::new();
+            for _ in 0..2 {
+                events.push(plan(&controller, &keystroke(" ", true)));
+                events.push(plan(&controller, &keystroke(" ", false)));
+            }
+            let mut shift_space = keystroke(" ", true);
+            shift_space.shift = true;
+            events.push(plan(&controller, &shift_space));
+            assert_eq!(events, vec![KeyPlan::Code(KEY_SPACE); 5]);
+        }
+    }
+
+    #[test]
+    fn space_never_maps_to_the_period_key() {
+        for layout in [us_layout(), swiss_german_layout()] {
+            let controller = controller(layout);
+            for modifiers in 0..16 {
+                let mut space = keystroke(" ", true);
+                space.shift = modifiers & 1 != 0;
+                space.ctrl = modifiers & 2 != 0;
+                space.alt = modifiers & 4 != 0;
+                space.meta = modifiers & 8 != 0;
+                assert_eq!(plan(&controller, &space), KeyPlan::Code(KEY_SPACE));
+            }
+        }
+    }
+
+    #[test]
+    fn space_stays_text_where_the_platform_does_not_list_it() {
+        let mut layout = us_layout();
+        layout.space_is_independent = false;
+        let controller = controller(layout);
+        assert_eq!(
+            plan(&controller, &keystroke(" ", true)),
+            KeyPlan::Text(KEY_SPACE)
+        );
+    }
+
+    #[test]
+    fn named_keys_are_pressed_by_code_or_ignored() {
+        let controller = controller(us_layout());
+        assert_eq!(
+            plan(&controller, &keystroke("Enter", true)),
+            KeyPlan::Code(KEY_ENTER)
+        );
+        assert_eq!(
+            plan(&controller, &keystroke("Insert", true)),
+            KeyPlan::Code(KEY_INSERT)
+        );
+        assert_eq!(
+            plan(&controller, &keystroke("F5", false)),
+            KeyPlan::Code(KEY_F5)
+        );
+        for key in [
+            "Unidentified",
+            "Dead",
+            "Process",
+            "AudioVolumeUp",
+            "MediaPlayPause",
+            "PrintScreen",
+            "ContextMenu",
+            "Pause",
+            "Hyper",
+        ] {
+            for down in [true, false] {
+                assert_eq!(
+                    plan(&controller, &keystroke(key, down)),
+                    KeyPlan::Ignore(KeyIgnored::UnknownNamedKey),
+                    "{key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn punctuation_is_typed_as_text_on_both_layouts() {
+        for key in [",", ";", ":", ".", "'", "\"", "?", "ä", "à", "@", "<", ">"] {
+            for layout in [us_layout(), swiss_german_layout()] {
+                let controller = controller(layout);
+                let planned = plan(&controller, &keystroke(key, true));
+                assert!(
+                    matches!(planned, KeyPlan::Text(_)),
+                    "{key:?} must be typed as text, got {planned:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn swiss_german_alt_gr_character_uses_its_key() {
+        // A Windows controller holding AltGr reports Ctrl+Alt.
+        let controller = controller(swiss_german_layout());
+        let mut at_sign = keystroke("@", true);
+        at_sign.alt = true;
+        at_sign.ctrl = true;
+        assert_eq!(plan(&controller, &at_sign), KeyPlan::Code(KEY_2));
+    }
+
+    #[test]
+    fn shifted_punctuation_shortcut_finds_the_right_key() {
+        // Ctrl+Shift+; on Swiss German is the comma key.
+        let controller = controller(swiss_german_layout());
+        let mut shortcut = keystroke(";", true);
+        shortcut.ctrl = true;
+        shortcut.shift = true;
+        assert_eq!(plan(&controller, &shortcut), KeyPlan::Code(KEY_COMMA));
+        // Ctrl+. is the period key on both.
+        let mut shortcut = keystroke(".", true);
+        shortcut.ctrl = true;
+        assert_eq!(plan(&controller, &shortcut), KeyPlan::Code(KEY_PERIOD));
+    }
+
+    #[test]
+    fn shortcut_with_a_character_the_layout_lacks_presses_nothing() {
+        let controller = controller(us_layout());
+        let mut shortcut = keystroke("ä", true);
+        shortcut.ctrl = true;
+        assert_eq!(
+            plan(&controller, &shortcut),
+            KeyPlan::Ignore(KeyIgnored::ShortcutWithoutKey)
+        );
     }
 }

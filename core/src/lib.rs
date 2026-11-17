@@ -25,6 +25,10 @@ mod app_veil;
 
 pub mod input {
     pub mod clipboard;
+    pub mod diagnostics;
+    #[cfg(target_os = "windows")]
+    pub mod input_state_windows;
+    pub mod key_rules;
     pub mod keyboard;
     pub mod mouse;
 }
@@ -1019,6 +1023,55 @@ impl<'a> Application<'a> {
         }
     }
 
+    /// fork: remote input on this machine is blocked (lock screen, administrator
+    /// prompt or window) or possible again. Tells the viewers with the existing
+    /// "remote control enabled" message, which every Hopp version understands
+    /// (their window shows "Remote control is disabled" and stops sending input),
+    /// and tells the person at this machine with a system notification.
+    fn handle_remote_input_notice(&mut self, notice: input::diagnostics::InputNotice) {
+        use input::diagnostics::InputNotice;
+
+        // Only the sharer speaks for the shared screen.
+        if self.remote_control.is_none() {
+            log::debug!("handle_remote_input_notice: not sharing, ignoring {notice:?}");
+            return;
+        }
+        log::info!("handle_remote_input_notice: {notice:?}");
+
+        let enabled_for_viewers = match &notice {
+            InputNotice::Blocked(_) | InputNotice::BlockedAttempt { .. } => Some(false),
+            // Back to what the sharer chose in the settings, not blindly "on".
+            InputNotice::Unblocked => Some(self.remote_control_enabled),
+            // Only that one window ignores input; clicks elsewhere still work.
+            InputNotice::ElevatedWindow(_) => None,
+        };
+        if let Some(enabled) = enabled_for_viewers {
+            if let Some(room_service) = self.room_service.as_ref() {
+                room_service.publish_controller_cursor_enabled(enabled);
+            }
+        }
+
+        let text_for_sharer = match notice {
+            InputNotice::BlockedAttempt {
+                reason,
+                first: true,
+            } => Some(format!(
+                "A teammate tried to control your screen, but {reason}. Windows does not let \
+                 Hopp click or type there."
+            )),
+            InputNotice::ElevatedWindow(program) => Some(format!(
+                "Your teammate's clicks and keys are being ignored by {program}: it runs as \
+                 administrator, and Windows does not let Hopp control such windows."
+            )),
+            _ => None,
+        };
+        if let Some(text) = text_for_sharer {
+            if let Err(e) = self.socket.send(Message::RemoteInputNotice(text)) {
+                error!("handle_remote_input_notice: error sending RemoteInputNotice: {e:?}");
+            }
+        }
+    }
+
     fn stop_screenshare(&mut self) {
         log::info!("stop_screenshare");
         #[cfg(target_os = "macos")]
@@ -1952,6 +2005,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 if let Some(room_service) = self.room_service.as_ref() {
                     room_service.send_participants_snapshot();
                 }
+            }
+            UserEvent::RemoteInputNotice(notice) => {
+                self.handle_remote_input_notice(notice);
             }
             UserEvent::ParticipantInControl(participant) => {
                 log::debug!("user_event: participant in control: {participant:?}");
@@ -3252,6 +3308,8 @@ pub struct ParticipantData {
 
 #[derive(Debug, Clone)]
 pub enum UserEvent {
+    /// fork: remote input is blocked or possible again on this (sharing) machine.
+    RemoteInputNotice(input::diagnostics::InputNotice),
     CursorPosition(f32, f32, String),
     MouseClick(MouseClickData, String),
     ControllerCursorEnabled(bool),
